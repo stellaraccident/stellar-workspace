@@ -7,7 +7,7 @@ Both invoke the same lifecycle implementation. Run with `--dry-run` to preview.
 - `sw-init [PATH] [--name NAME]`: create missing skeleton and starter skills.
 - `sw-init [PATH] --upgrade`: update unchanged managed templates.
 - `sw-init [PATH] --repair`: restore missing scaffolding.
-- `sw-init [PATH] --set sandbox.gpu true`: change supported configuration.
+- `sw-init [PATH] --set sandbox.gpu false`: change supported configuration.
 
 Maintenance without PATH discovers the workspace from SW_WORKSPACE or the
 nearest workspace.toml. Creation defaults to the current directory. Keep

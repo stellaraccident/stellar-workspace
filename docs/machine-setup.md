@@ -1,6 +1,42 @@
 # Machine setup
 
+## Codex on the remote SSH host
+
+### Preserve the sandbox PATH
+
+Login-shell startup files can replace the sandbox's prepared `PATH`, causing
+Codex shell commands to miss workspace tools or use a system Python instead of
+the workspace venv. Set this at the top level of `~/.codex/config.toml` on the
+remote host, before any table headers such as `[tui]`:
+
+```toml
+allow_login_shell = false
+```
+
+This makes shell commands default to non-login shells and rejects explicit
+`login: true` requests. It avoids login-shell startup files resetting the
+sandbox's prepared `PATH`, including the workspace `.venv/bin` entry.
+
+For isolated agent profiles that use a separate `CODEX_HOME`, put the setting
+in that profile's `config.toml` too; host configuration is not shared there.
+
+Reference: [Official OpenAI configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
 ## Windows Terminal setup
+
+### Copy and paste across tmux sessions
+
+When using the Codex TUI over SSH inside tmux, use Windows Terminal's clipboard
+shortcuts to copy and paste between sessions:
+
+1. Hold **Shift** while dragging the mouse to select text. This keeps selection
+   in Windows Terminal instead of sending the mouse events to Codex or tmux.
+2. Press **Ctrl+Shift+C** to copy to the Windows clipboard.
+3. Switch to the destination tmux session.
+4. Press **Ctrl+Shift+V** to paste from the Windows clipboard.
+
+Reference: [Windows Terminal selection](https://learn.microsoft.com/en-us/windows/terminal/selection)
+and [clipboard actions](https://learn.microsoft.com/en-us/windows/terminal/customize-settings/actions#clipboard-integration-commands).
 
 ### Multiline input in Codex
 

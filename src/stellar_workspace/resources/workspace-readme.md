@@ -25,7 +25,7 @@ and small executables in `programs/bin`; only `programs/bin` is added by default
 `TMPDIR`, `TMP` and `TEMP` point to `.tmp/`. No automatic cleanup is performed.
 
 Use `sw-init --dry-run`, `sw-init --upgrade --dry-run`, `sw-init --repair`, or
-`sw-init --set sandbox.gpu true`. Maintenance preserves local edits and reports
+`sw-init --set sandbox.gpu false`. Maintenance preserves local edits and reports
 conflicts; backups of replaced files live in `.tmp/sw-init-backups/`.
 
 See `AGENTS.md` and its skill index. Add project setup and active documentation

@@ -9,21 +9,31 @@ Required system directories are read-only, home/proc/dev are synthetic, and the
 workspace is writable. Workspace `.tmp` is also `/tmp` (TMPDIR/TMP/TEMP). The local
 venv is writable; external Python base paths are read-only. Host environment is
 cleared; `.envrc` is not executed. Put explicit extra values in sandbox.env.
+Existing ~/.local/bin, ~/.local/lib/node_modules and
+~/.codex/packages directories are read-only, including with agent profiles.
+~/.local/bin is on PATH after workspace tools and before system tools. Other
+local data stays hidden. Symlinked installation directories need explicit mounts.
+
+By default existing ~/.codex is shared read-write for host login, config, skills,
+credential refreshes and sessions; its packages/ tree stays read-only. This is
+intentional host state sharing, including any secrets embedded in config or
+shell snapshots. Use --agent-profile codex for isolated workspace-local state.
 
 - `--no-network` isolates networking; it cannot be combined with the GitHub proxy.
-- `--gpu` exposes AMD /dev/kfd, /dev/dri and read-only /sys. SDK mounts/env remain
-  explicit. Missing requested devices are errors.
+- GPU access defaults on, exposing AMD /dev/kfd, /dev/dri and read-only /sys.
+  Use `--no-gpu` to disable it. SDK mounts/env remain explicit. Missing requested
+  devices are errors.
 - `--ro PATH` / `--rw PATH` add mounts; relative paths use the workspace root.
   External symlink targets need explicit mounts. Protected overlays, credential
   directories and mounts overlapping host GitHub/PyPI/Git credential paths are denied.
   Mount specific external CLI/runtime paths, not broad home/config directories.
-- `--agent-profile codex|claude` seeds only ~/.codex/auth.json or
-  ~/.claude/.credentials.json into workspace cache/agent-state/PROFILE, then
+- `--agent-profile codex` replaces the default host state mount and seeds only
+  ~/.codex/auth.json into workspace cache/agent-state/codex, then
   persists local config/sessions there. Seeds are mode 0600, copied only if
   missing, and do not update the host originals. Provider auth is intentionally
-  exposed to the selected agent. Host config, shell snapshots, old sessions and
-  ~/.claude.json are excluded because they may embed GitHub tokens. CLIs are
-  not automatically installed or mounted.
+  exposed to the selected agent. Host config, shell snapshots and old sessions
+  are excluded in this mode because they may embed GitHub tokens. CLIs must
+  already be installed in a default tool directory or explicitly mounted.
 - Host ~/.gitconfig, Git credentials, netrc, GitHub configuration (including a
   custom GH_CONFIG_DIR) and keyring directories remain hidden. Use repository
   local Git identity settings if needed. Host token environment variables
@@ -33,8 +43,9 @@ cleared; `.envrc` is not executed. Put explicit extra values in sandbox.env.
   UV_*, PYPI_* and other packaging auth environment overrides are denied. Pip
   config loading and pip/uv/Python keyring lookup are disabled inside the
   sandbox. Credential files are masked in the sandbox without changing originals.
-- `--gh-proxy` allows supported read commands over an owned host socket. Host
-  credentials stay on the host; known token values are redacted from responses.
+- `--gh-proxy` allows supported read commands over an owned host socket. GitHub
+  credential files stay hidden; known token values are redacted from responses.
+  Default Codex sharing can expose tokens embedded in ~/.codex files.
   Configured environment aliases containing known credentials are rejected too.
   GitHub writes and attempts to bypass the proxy are off-limits. Leave denied
   actions to the human. Raw API, unknown options, downloads and mutations are

@@ -27,7 +27,7 @@ def digest(text: str) -> str:
 
 def templates(name: str, source: str) -> dict[str, str]:
     resources = files("stellar_workspace").joinpath("resources")
-    result = {"workspace.toml": f"schema = 1\nname = {json.dumps(name)}\n\n[sandbox]\nnetwork = true\ngpu = false\ngh_proxy = false\nagent_profiles = []\nro = []\nrw = []\n"}
+    result = {"workspace.toml": f"schema = 1\nname = {json.dumps(name)}\n\n[sandbox]\nnetwork = true\ngpu = true\ngh_proxy = false\nagent_profiles = []\nro = []\nrw = []\n"}
     for target, resource in (("AGENTS.md", "workspace-agents.md"), ("README.md", "workspace-readme.md"),
                              (".envrc", "envrc.sh"), (".gitignore", "workspace-ignore.md")):
         result[target] = resources.joinpath(resource).read_text().replace("__NAME__", name).replace("__SOURCE__", source)
@@ -64,7 +64,7 @@ def atomic_write(path: Path, content: str) -> None:
 
 def initialize(root: Path, *, name: str | None = None, source: str | None = None,
                upgrade: bool = False, repair: bool = False, changes: list | None = None,
-               dry_run: bool = False) -> list[str]:
+               dry_run: bool = False, team: bool = False) -> list[str]:
     if root.is_symlink():
         raise WorkspaceError(f"Workspace destination is a symlink: {root}")
     root = root.absolute()
@@ -104,7 +104,20 @@ def initialize(root: Path, *, name: str | None = None, source: str | None = None
         desired["workspace.toml"] = config_text
     elif changes:
         desired["workspace.toml"] = set_values(desired["workspace.toml"], changes)
-    validate(tomllib.loads(desired["workspace.toml"]))
+    if team and "team" not in tomllib.loads(desired["workspace.toml"]):
+        from .agents.config import team_text
+        desired["workspace.toml"] += team_text()
+    final_config = validate(tomllib.loads(desired["workspace.toml"]))
+    if "team" in final_config:
+        from .agents.config import team_templates
+        desired.update(team_templates(final_config["team"]))
+        desired["AGENTS.md"] += ("\n## Named team\n\nRead `sw-agent-readme team` and `sw-agent-readme machine`. "
+            "The roster is in workspace.toml; personal instructions are in agents/NAME/AGENTS.md. "
+            "Read workspace and shared MOTDs before new work. "
+            "Use sw-agent for canonical beads and named sessions; respect peer ownership.\n\n"
+            "- [Team operation](skills/team-operation/SKILL.md)\n"
+            "- [Machine operation](skills/machine-operation/SKILL.md)\n")
+        desired[".gitignore"] += "\n/agents/*/state/\n/agents/*/logs/\n/agents/*/worktrees/\n/agents/*/build/\n/agents/*/cache/\n/agents/*/programs/\n/agents/*/scratch/\n/agents/*/tmp/\n/.sw/agents/\n"
     conflicts, writes, plan = [], {}, []
     new_files = dict(state["files"])
     for directory in (*DIRECTORIES, ".sw"):
@@ -125,7 +138,7 @@ def initialize(root: Path, *, name: str | None = None, source: str | None = None
             if recorded or not config_path.exists():
                 new_files[rel] = digest(text)
             continue
-        change = old is None or (rel == "workspace.toml" and bool(changes or name != config.get("name", name))) or upgrade or (rel in {"AGENTS.md", "README.md"} and name != state.get("name", name))
+        change = old is None or (rel == "workspace.toml" and bool(changes or team or name != config.get("name", name))) or upgrade or (team and rel in {".gitignore", "AGENTS.md"}) or (rel in {"AGENTS.md", "README.md"} and name != state.get("name", name))
         if old is not None and change and (not recorded or (rel != "workspace.toml" and digest(old) != recorded)):
             difference = "".join(difflib.unified_diff(old.splitlines(True), text.splitlines(True), fromfile=rel, tofile=f"{rel} (proposed)"))
             conflicts.append(f"Customized or unmanaged file: {rel}\n{difference}")
@@ -168,6 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     modes.add_argument("--upgrade", action="store_true")
     modes.add_argument("--repair", action="store_true")
     parser.add_argument("--set", nargs=2, action="append", default=[], metavar=("KEY", "VALUE"))
+    parser.add_argument("--team", action="store_true", help="Add managed team roster, MOTD, instructions and skills")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     try:
@@ -175,7 +189,7 @@ def main(argv: list[str] | None = None) -> int:
         checkout = Path(__file__).resolve().parents[2]
         source = str(checkout) if (checkout / "sw-init.py").exists() else None
         plan = initialize(root, name=args.name, source=source, upgrade=args.upgrade, repair=args.repair,
-                          changes=args.set, dry_run=args.dry_run)
+                          changes=args.set, dry_run=args.dry_run, team=args.team)
         print("\n".join(plan) if plan else "Workspace is up to date.")
         print(f"\nNext: cd {str(root)!r}, then run direnv allow from your external shell.")
         import shlex

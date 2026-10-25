@@ -5,8 +5,11 @@ workspace scaffolding, run Linux agent sessions in Bubblewrap, and review Git
 changes locally with feedback in Git notes. Agents get the full operating guide
 from the installed package via `sw-agent-readme`.
 
+For everyday setup, commands, terminal keys and recovery, start with
+[HUMANS.md](HUMANS.md).
+
 Requires Python 3.11+. Git, direnv, Bubblewrap and optional host CLIs are external
-programs. The only Python runtime dependency is Pygments. No PyPI publication is
+programs. Python runtime dependencies are Pygments and websocket-client. No PyPI publication is
 required; install directly from this checkout.
 
 ## Bootstrap and install
@@ -71,7 +74,7 @@ never automatically deletes scratch data, commits, pushes or changes branches.
 sw-init [PATH] [--name NAME] [--dry-run]
 sw-init [PATH] --upgrade [--dry-run]
 sw-init [PATH] --repair [--dry-run]
-sw-init [PATH] --set sandbox.gpu true
+sw-init [PATH] --set sandbox.gpu false
 sw-init [PATH] --set sandbox.ro '["/opt/sdk"]'
 ```
 
@@ -115,7 +118,7 @@ sw-sandbox --dry-run
 sw-sandbox -- bash
 sw-sandbox --no-network -- python -m pytest
 sw-sandbox --gpu --ro /opt/rocm -- COMMAND
-sw-sandbox --agent-profile codex --ro /path/to/agent-install -- codex
+sw-sandbox --agent-profile codex -- codex
 sw-sandbox --gh-proxy -- gh pr list -R owner/repo
 ```
 
@@ -133,17 +136,36 @@ is used even if another VIRTUAL_ENV is inherited; external base interpreter
 paths are exposed read-only. Environment is rebuilt from an allowlist; `.envrc`
 is not executed by the launcher.
 
-Network defaults on. GPU, workspace-local Codex/Claude state and the GitHub
-proxy are opt-in. `--no-network` cannot be combined with host bridges. AMD GPU access
+Existing `~/.local/bin`, `~/.local/lib/node_modules`
+and `~/.codex/packages` directories are exposed read-only. `~/.local/bin` is on
+PATH after workspace tools and before system tools, so local Codex installations
+work out of the box. Other local data stays hidden. Symlinked installation
+directories and other external symlink targets still need explicit mounts.
+
+By default, existing `~/.codex` is shared read-write, matching the original
+workspace launcher. `sw-sandbox -- codex` uses your host login, configuration,
+skills and session history, and persists credential refreshes and runtime state
+on the host. The `packages/` installation tree remains read-only. This also
+exposes any other secrets embedded in Codex config or shell snapshots; default
+mode does not isolate host Codex state.
+
+Network and GPU access default on. Workspace-local Codex state and the GitHub
+proxy are opt-in. Use `--no-gpu` on hosts without AMD GPU devices. `--no-network` cannot be combined with host bridges. AMD GPU access
 requires `/dev/kfd` and `/dev/dri`, and exposes read-only `/sys`. SDK environment
-and mounts remain explicit. `--ro`/`--rw` append mounts at their real paths;
+and mounts remain explicit. Named agents inherit `sandbox.gpu` unless their
+`team.agents.NAME.gpu` overrides it. Existing explicit `gpu = false` settings
+still disable access; use `sw-init --set sandbox.gpu true` to enable it in an
+older workspace and remove unwanted per-agent overrides.
+`--ro`/`--rw` append mounts at their real paths;
 relative paths use the workspace root. External workspace symlink targets are
 not mounted automatically. Protected overlays and SSH/GPG/AWS credential mounts
-are rejected. Optional agent profiles seed only `~/.codex/auth.json` or
-`~/.claude/.credentials.json` into `cache/agent-state/PROFILE/`, with mode 0600,
+are rejected. The optional `--agent-profile codex` replaces shared host state
+with workspace-local state and seeds only `~/.codex/auth.json` into
+`cache/agent-state/codex/`, with mode 0600,
 then persist local sessions/config there. They do not share host configuration,
-shell snapshots, or existing sessions, and do not automatically provide a CLI.
-Provider auth is intentionally available to the agent when this profile is chosen.
+shell snapshots, or existing sessions. CLIs must already be installed in a default
+tool directory or made available with an explicit mount.
+Provider auth is intentionally available in both modes.
 Host Git config, Git credentials, GitHub CLI config (including GH_CONFIG_DIR),
 netrc and keyring directories stay hidden; credential mount overlaps are denied.
 Configure Git author identity locally in a source repository when needed.
@@ -152,7 +174,9 @@ GitHub and PyPI token environment variables are never inherited by the sandbox o
 Bubblewrap supervisor. Known token values are rejected in configured environment
 aliases and redacted from proxy responses. The real-sandbox tests verify this
 boundary with fake host tokens, credential files, `/proc` environment reads and
-agent config/shell snapshots, while a proxied read authenticates on the host.
+agent config/shell snapshots in isolated profile mode, while a proxied read
+authenticates on the host. Default mode intentionally exposes secrets stored
+under `~/.codex`.
 PyPI protections also mask `.pypirc`, pip/uv/Poetry config/credential stores,
 custom `PIP_CONFIG_FILE`, per-venv `pip.conf`, netrc and keyring files. Publishing
 and package-auth environment overrides are denied, including TWINE, PIP, UV,
@@ -235,7 +259,7 @@ name = "example"
 
 [sandbox]
 network = true
-gpu = false
+gpu = true
 gh_proxy = false
 agent_profiles = []
 ro = []
@@ -271,3 +295,35 @@ Apache-2.0; see LICENSE and NOTICE. Review layout/styles are adapted from the
 original local pyre-review project. HRX/ROCm-specific scripts, role/model launchers,
 automatic source synchronization, and a general plugin framework are outside the
 initial scope.
+
+
+## Named interactive agents
+
+Enable the optional roster and coordination files, then install the pinned
+beads-rust tool and create a fresh tracker explicitly:
+
+```bash
+sw-init --team
+sw-agent install-br --dry-run
+sw-agent install-br
+sw-agent init-beads
+sw-agent doctor
+sw-agent start lead
+sw-agent visit lead
+```
+
+Requires Linux, Bubblewrap, tmux and a qualified Codex CLI (tested with 0.162.1).
+The primordial `sw-init.py --team` also works before installing Python packages.
+Initializer never starts agents or creates a tracker. Existing trackers are
+preserved; migrations are explicit operator work.
+
+Talk normally to the lead. Start the named workers once from the operator shell; the lead creates and
+assigns beads through `sw-agent`, and running workers wake on ready assignments. Visit a
+worker's actual Codex UI with `sw-agent visit ada`; this suspends automatic task
+pickup until `sw-agent auto ada`. `sw-agent watch ada` observes without takeover.
+Detaching tmux keeps the conversation running.
+
+[docs/multi-agent.md](docs/multi-agent.md) is the living design and complete
+operator reference, including machine-wide IT, MOTD broadcasts, cooperative
+ownership, sandbox mounts and recovery. Installed agents use
+`sw-agent-readme team` and `sw-agent-readme machine`.

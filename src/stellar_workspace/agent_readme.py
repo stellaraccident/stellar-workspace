@@ -2,7 +2,7 @@
 import argparse
 from importlib.resources import files
 
-TOPICS = ("init", "sandbox", "review", "config")
+TOPICS = ("init", "sandbox", "review", "config", "team", "machine")
 
 
 def read(topic: str) -> str:

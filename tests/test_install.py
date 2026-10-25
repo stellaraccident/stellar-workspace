@@ -47,7 +47,10 @@ def test_wheel_sdist_and_reinstall(tmp_path):
     root = tmp_path / 'created by installed command'
     run([target/'bin/sw-init',root])
     run([target/'bin/sw-init',root,'--repair'])
-    for command in ('sw-init','sw-sandbox','sw-review','sw-agent-readme'):
+    run([target/'bin/sw-init',root,'--team'])
+    assert (root/'agents/lead/AGENTS.md').is_file()
+    assert 'Persistent interactive team' in run([target/'bin/sw-agent-readme','team'])
+    for command in ('sw-init','sw-sandbox','sw-review','sw-agent-readme','sw-agent'):
         assert 'usage:' in run([target/'bin'/command,'--help'])
     # Installed renderer can create a snapshot without importing from checkout.
     from stellar_workspace.review.git_ops import git

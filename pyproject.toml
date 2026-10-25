@@ -4,18 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stellar-workspace"
-version = "0.1.0"
+version = "0.2.0"
 description = "Reusable workspace bootstrap, Linux sandbox, and local Git review tools"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
-dependencies = ["Pygments>=2.15"]
+dependencies = ["Pygments>=2.15", "websocket-client>=1.8,<2"]
 
 [project.optional-dependencies]
 test = ["pytest>=7", "build", "wheel"]
 
 [project.scripts]
+sw-agent = "stellar_workspace.agents.cli:main"
 sw-init = "stellar_workspace.init:main"
 sw-sandbox = "stellar_workspace.sandbox.cli:main"
 sw-review = "stellar_workspace.review.cli:main"

@@ -12,13 +12,13 @@ class WorkspaceError(ValueError):
 
 
 SANDBOX_DEFAULTS = {
-    "network": True, "gpu": False, "gh_proxy": False,
+    "network": True, "gpu": True, "gh_proxy": False,
     "agent_profiles": [], "ro": [], "rw": [], "env": {},
 }
 
 
 def validate(data: dict) -> dict:
-    unknown = data.keys() - {"schema", "name", "sandbox", "repositories"}
+    unknown = data.keys() - {"schema", "name", "sandbox", "repositories", "team"}
     if unknown:
         raise WorkspaceError(f"Unknown workspace keys: {sorted(unknown)}")
     if type(data.get("schema")) is not int or data["schema"] != 1:
@@ -33,8 +33,8 @@ def validate(data: dict) -> dict:
             raise WorkspaceError(f"Invalid sandbox.{key} type")
         if isinstance(value, list) and any(not isinstance(x, str) for x in value):
             raise WorkspaceError(f"sandbox.{key} must contain strings")
-    if set(sandbox.get("agent_profiles", [])) - {"codex", "claude"}:
-        raise WorkspaceError("Agent profiles must be codex or claude")
+    if set(sandbox.get("agent_profiles", [])) - {"codex"}:
+        raise WorkspaceError("Only the codex agent profile is supported; remove the retired claude profile")
     if any(not isinstance(k, str) or not isinstance(v, str) for k, v in sandbox.get("env", {}).items()):
         raise WorkspaceError("sandbox.env must map strings to strings")
     repos = data.get("repositories", [])
@@ -53,6 +53,9 @@ def validate(data: dict) -> dict:
             raise WorkspaceError("Duplicate repository name/path")
         names.add(repo["name"])
         paths.add(repo["path"])
+    if "team" in data:
+        from .agents.config import validate_team
+        validate_team(data["team"])
     return data
 
 

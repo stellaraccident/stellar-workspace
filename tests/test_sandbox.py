@@ -8,7 +8,7 @@ import threading
 
 import pytest
 
-from stellar_workspace.sandbox.core import build_plan, argv_for, execute
+from stellar_workspace.sandbox.core import LOCAL_TOOL_DIRECTORIES, build_plan, argv_for, execute
 from stellar_workspace.sandbox.proxy import allowed, Proxy
 from stellar_workspace.workspace import WorkspaceError, load
 
@@ -31,6 +31,25 @@ def test_plan_and_argv(workspace, monkeypatch):
         for h in handles: h.close()
 
 
+def test_gpu_defaults_and_cli_override(workspace, monkeypatch, capsys):
+    from stellar_workspace.sandbox.cli import main
+    config = load(workspace)
+    del config['sandbox']['gpu']
+    exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: path in (Path('/dev/kfd'), Path('/dev/dri')) or exists(path))
+    plan = build_plan(workspace, config)
+    assert plan.capabilities['gpu'] is True
+    for device in ('/dev/kfd', '/dev/dri'):
+        assert ('--dev-bind', device, device) in plan.mounts
+    assert ('--ro-bind', '/sys', '/sys') in plan.mounts
+    # Persisted configuration and CLI flags can still disable the default.
+    assert not build_plan(workspace, load(workspace)).capabilities['gpu']
+    path = workspace / 'workspace.toml'
+    path.write_text(path.read_text().replace('gpu = false', 'gpu = true'))
+    assert main(['--workspace', str(workspace), '--no-gpu', '--dry-run']) == 0
+    assert not json.loads(capsys.readouterr().out)['capabilities']['gpu']
+
+
 def test_reject_capability_and_mount_conflicts(workspace, tmp_path):
     config = load(workspace)
     with pytest.raises(WorkspaceError, match='incompatible'):
@@ -44,6 +63,84 @@ def test_reject_capability_and_mount_conflicts(workspace, tmp_path):
     assert ('--ro-bind', str(external), str(external)) in plan.mounts
     with pytest.raises(WorkspaceError, match='environment'):
         build_plan(workspace, config, {'env':{'PATH':'/bypass'}})
+
+
+@pytest.fixture
+def local_tools(tmp_path, monkeypatch):
+    home = tmp_path / 'tool-home'
+    for relative in LOCAL_TOOL_DIRECTORIES:
+        (home / relative).mkdir(parents=True)
+    release = home / '.codex/packages/standalone/releases/test/bin'
+    release.mkdir(parents=True)
+    binary = release / 'codex'
+    binary.write_text('#!/bin/sh\nprintf "local codex help\\n"\n')
+    binary.chmod(0o755)
+    (home / '.codex/packages/standalone/current').symlink_to('releases/test')
+    (home / '.local/bin/codex').symlink_to(home / '.codex/packages/standalone/current/bin/codex')
+    (home / '.codex/config.toml').write_text('host configuration')
+    (home / '.codex/auth.json').write_text('{"access_token":"fake-openai-credential"}')
+    monkeypatch.setenv('HOME', str(home))
+    return home
+
+
+@pytest.mark.parametrize('profile', [None, 'codex'])
+def test_local_tool_mounts_and_path(workspace, local_tools, profile):
+    plan = build_plan(workspace, load(workspace), {'agent_profiles': [profile] if profile else []})
+    for relative in LOCAL_TOOL_DIRECTORIES:
+        path = str(local_tools / relative)
+        assert ('--ro-bind', path, path) in plan.mounts
+    path = plan.env['PATH'].split(':')
+    assert path.index(str(workspace / '.venv/bin')) < path.index(str(local_tools / '.local/bin'))
+    assert path.index(str(local_tools / '.local/bin')) < path.index('/usr/bin')
+    assert not any(src == str(local_tools / '.local') for _, src, _ in plan.mounts)
+    host_mount = ('--bind', str(local_tools / '.codex'), str(local_tools / '.codex'))
+    assert (host_mount in plan.mounts) == (profile is None)
+    if profile == 'codex':
+        state_mount = next(i for i, (_, _, dst) in enumerate(plan.mounts) if dst == str(local_tools / '.codex'))
+        package_mount = next(i for i, (_, _, dst) in enumerate(plan.mounts) if dst == str(local_tools / '.codex/packages'))
+        assert state_mount < package_mount
+
+
+def test_missing_or_symlinked_tool_directories_are_not_mounted(workspace, tmp_path, monkeypatch):
+    home = tmp_path / 'empty-home'
+    (home / '.local').mkdir(parents=True)
+    (home / '.local/bin').symlink_to(tmp_path, target_is_directory=True)
+    monkeypatch.setenv('HOME', str(home))
+    plan = build_plan(workspace, load(workspace))
+    assert not any(src == str(home / relative) for _, src, _ in plan.mounts for relative in LOCAL_TOOL_DIRECTORIES)
+    assert not any(dst == str(home / '.codex') for _, _, dst in plan.mounts)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize('profile', [None, 'codex'])
+def test_real_local_codex_available_read_only(workspace, local_tools, profile):
+    import shutil
+    if not shutil.which('bwrap'):
+        pytest.skip('Bubblewrap is not installed')
+    probe = subprocess.run(['bwrap', '--ro-bind', '/', '/', '--unshare-user', '--', 'true'], capture_output=True)
+    if probe.returncode:
+        pytest.skip('Host namespace policy prevents Bubblewrap: ' + probe.stderr.decode().strip())
+    plan = build_plan(workspace, load(workspace), {'agent_profiles': [profile] if profile else []})
+    script = '''
+import errno, pathlib, subprocess
+home = pathlib.Path.home()
+assert subprocess.check_output(['codex', '--help'], text=True) == 'local codex help\\n'
+assert (home / '.codex/config.toml').exists() == SHARED_HOST
+assert (home / '.codex/auth.json').read_text() == '{"access_token":"fake-openai-credential"}'
+(home / '.codex/session-probe').write_text('persisted session')
+for relative in ('.local/bin/probe', '.codex/packages/probe'):
+    try:
+        (home / relative).write_text('must not write to host tools')
+    except OSError as exc:
+        assert exc.errno in (errno.EROFS, errno.EACCES), exc
+    else:
+        raise AssertionError('Host tool directory is writable')
+'''
+    script = 'SHARED_HOST = ' + repr(profile is None) + '\n' + script
+    assert execute(plan, ['python', '-c', script]) == 0
+    state = local_tools / '.codex' if profile is None else workspace / 'cache/agent-state/codex'
+    assert (state / 'session-probe').read_text() == 'persisted session'
+    assert (local_tools / '.codex/session-probe').exists() == (profile is None)
 
 
 @pytest.mark.parametrize('args', [
@@ -139,12 +236,14 @@ def test_github_token_configuration_denied(workspace, monkeypatch, tmp_path):
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("proxy_enabled,profile", [(False,None),(True,None),(True,"codex"),(True,"claude")])
-def test_real_sandbox_cannot_read_github_tokens(workspace,tmp_path,monkeypatch,proxy_enabled,profile):
-    """Critical boundary: both credential env and files stay on the host.
+@pytest.mark.parametrize("profile_name", [None, "ada"])
+@pytest.mark.parametrize("proxy_enabled,profile", [(False,None),(True,None),(True,"codex")])
+def test_real_sandbox_cannot_read_github_tokens(workspace,tmp_path,monkeypatch,proxy_enabled,profile,profile_name):
+    """Check protected credential files/environment and the gh proxy.
 
     Includes /proc environment inspection, custom GH_CONFIG_DIR, global Git
-    config/credentials, Codex MCP config and shell snapshots, and the gh proxy.
+    config/credentials and the gh proxy. Explicit Codex profiles hide host
+    config/snapshots; default host sharing intentionally exposes them.
     All credentials here are generated sentinels, never real user tokens.
     """
     import hashlib
@@ -206,8 +305,9 @@ for path in PATHS:
     candidate=pathlib.Path(path)
     if candidate.is_file():
         assert not candidate.read_bytes(), 'Host credential file exposed'
-assert not pathlib.Path.home().joinpath('.codex/config.toml').exists()
-assert not pathlib.Path.home().joinpath('.codex/shell_snapshots/leak.sh').exists()
+for relative in ('.codex/config.toml', '.codex/shell_snapshots/leak.sh'):
+    candidate = pathlib.Path.home() / relative
+    assert candidate.exists() == SHARED_CODEX
 assert not pathlib.Path.home().joinpath('.claude/settings.json').exists()
 assert not pathlib.Path.home().joinpath('.claude.json').exists()
 if PROXY_ENABLED:
@@ -222,8 +322,8 @@ if PROXY_ENABLED:
         check(denied.stdout+denied.stderr)
 '''
     paths=[str(custom/'hosts.yml'),str(home/'.config/gh/hosts.yml'),str(home/'.gitconfig'),str(home/'.git-credentials'),str(home/'.netrc')]
-    script='PROXY_ENABLED='+repr(proxy_enabled)+'\nHASHES='+repr(json.dumps(hashes))+'\nPATHS='+repr(paths)+'\n'+script
-    plan=build_plan(workspace,load(workspace),{'gh_proxy':proxy_enabled,'agent_profiles':[profile] if profile else []})
+    script='SHARED_CODEX='+repr(profile is None)+'\nPROXY_ENABLED='+repr(proxy_enabled)+'\nHASHES='+repr(json.dumps(hashes))+'\nPATHS='+repr(paths)+'\n'+script
+    plan=build_plan(workspace,load(workspace),{'gh_proxy':proxy_enabled,'agent_profiles':[profile] if profile else []}, agent_name=profile_name)
     assert execute(plan,['python','-c',script]) == 0
     assert not list((workspace/'.tmp').glob('sw-sandbox-*'))
     assert sentinels['GH_TOKEN'] not in json.dumps(plan.as_dict())
@@ -246,7 +346,8 @@ def test_pypi_config_and_alias_rejected(workspace,tmp_path,monkeypatch):
 
 
 @pytest.mark.integration
-def test_real_sandbox_cannot_read_pypi_credentials(workspace,tmp_path,monkeypatch):
+@pytest.mark.parametrize("named", [False, True])
+def test_real_sandbox_cannot_read_pypi_credentials(workspace,tmp_path,monkeypatch,named):
     import hashlib
     import shutil
     if not shutil.which('bwrap'):
@@ -304,7 +405,7 @@ for name in FILES:
 '''
     keys=[*env_tokens,'PIP_INDEX_URL','PIP_EXTRA_INDEX_URL']
     script='HASHES='+repr(hashes)+'\nKEYS='+repr(keys)+'\nFILES='+repr(list(map(str,[*files,config])))+'\n'+script
-    plan=build_plan(workspace,load(workspace),{'network':False})
+    plan=build_plan(workspace,load(workspace),{'network':False,'agent_profiles':['codex'] if named else []}, agent_name='ada' if named else None)
     assert execute(plan,['python','-c',script]) == 0
     # Masking must not modify the real credential data in the workspace venv.
     assert 'pypi-FAKE-site' in (workspace/'.venv/pip.conf').read_text()

@@ -14,6 +14,9 @@ from .proxy import Proxy, GH_ADAPTER
 from .credentials import credential_env, credential_paths, secret_values
 
 SYSTEM_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Installation trees stay read-only, including when sharing host Codex state.
+LOCAL_TOOL_DIRECTORIES = (".local/bin", ".local/lib/node_modules",
+                          ".codex/packages")
 
 
 @dataclass
@@ -35,7 +38,7 @@ class Plan:
                 "capabilities": self.capabilities}
 
 
-def build_plan(root: Path, config: dict, overrides: dict | None = None) -> Plan:
+def build_plan(root: Path, config: dict, overrides: dict | None = None, *, agent_name: str | None = None) -> Plan:
     options = {**SANDBOX_DEFAULTS, **config.get("sandbox", {}), **(overrides or {})}
     root = root.resolve()
     if not (root / ".venv/bin/python").exists():
@@ -74,23 +77,38 @@ def build_plan(root: Path, config: dict, overrides: dict | None = None) -> Plan:
             if external == Path("/") or external == home:
                 raise WorkspaceError("Python base would expose an overly broad path")
             plan.mounts.append(("--ro-bind", str(external), str(external)))
+    if agent_name:
+        from ..agents.config import valid_name
+        valid_name(agent_name)
+    # Match the original workspace launcher: ordinary interactive use shares
+    # host auth, config and writable session/runtime state. Explicit profiles
+    # below instead use isolated workspace state (including for named agents).
+    codex_home = home / ".codex"
+    if "codex" not in options["agent_profiles"] and codex_home.is_dir():
+        plan.mounts.append(("--bind", str(codex_home), str(codex_home)))
     for profile in options["agent_profiles"]:
-        if profile not in {"codex", "claude"}:
+        if profile != "codex":
             raise WorkspaceError(f"Unknown agent profile: {profile}")
         # Keep sessions/config local: host configs and shell snapshots may embed
         # GitHub tokens. Share only the selected provider's authentication file.
-        state = root / "cache/agent-state" / profile
+        state = (root / "agents" / agent_name / "state" / profile) if agent_name else (root / "cache/agent-state" / profile)
         if any(p.is_symlink() for p in (state, *state.parents) if p.is_relative_to(root)):
             raise WorkspaceError(f"Agent state must be workspace-local: {state}")
         plan.state_directories.append(state)
         target = home / f".{profile}"
         plan.mounts.append(("--bind", str(state), str(target)))
-        auth_name = "auth.json" if profile == "codex" else ".credentials.json"
+        auth_name = "auth.json"
         auth = target / auth_name
         if auth.is_file() and not auth.is_symlink():
             if any(secret in auth.read_text() for secret in secret_values()):
                 raise WorkspaceError(f"Selected agent auth contains a host credential: {auth}")
             plan.auth_seeds.append((auth, state / auth_name))
+    # Mount after agent state so ~/.codex/packages remains visible with a
+    # Codex profile. Preserve lexical destinations for ~/.local/bin symlinks.
+    for relative in LOCAL_TOOL_DIRECTORIES:
+        path = home / relative
+        if path.is_dir() and not path.is_symlink():
+            plan.mounts.append(("--ro-bind", str(path), str(path)))
     protected_credentials = credential_paths(root)
     used = set()
     for key, flag in (("ro", "--ro-bind"), ("rw", "--bind")):
@@ -130,7 +148,7 @@ def build_plan(root: Path, config: dict, overrides: dict | None = None) -> Plan:
                 "PIP_CONFIG_FILE": os.devnull, "PIP_KEYRING_PROVIDER": "disabled",
                 "UV_KEYRING_PROVIDER": "disabled", "UV_NO_CONFIG": "1",
                 "PYTHON_KEYRING_BACKEND": "keyring.backends.null.Keyring",
-                "PATH": f"{root}/.venv/bin:{root}/tools:{root}/programs/bin:{SYSTEM_PATH}"}
+                "PATH": f"{root}/.venv/bin:{root}/tools:{root}/programs/bin:{home}/.local/bin:{SYSTEM_PATH}"}
     reserved = set(plan.env) | {"GH_CONFIG_DIR", "GIT_CONFIG_GLOBAL","BASH_ENV", "ENV", "LD_PRELOAD", "PYTHONPATH", "PYTHONHOME", "SW_GH_SOCKET"}
     for key, value in options["env"].items():
         if not key.isidentifier() or key in reserved or credential_env(key) or "\x00" in value or any(secret in value for secret in secret_values()):

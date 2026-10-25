@@ -11,9 +11,9 @@ name = "example"
 
 [sandbox]
 network = true
-gpu = false
+gpu = true
 gh_proxy = false
-agent_profiles = [] # codex, claude
+agent_profiles = [] # codex
 ro = []
 rw = []
 

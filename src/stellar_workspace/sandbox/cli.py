@@ -13,7 +13,8 @@ def main(argv=None) -> int:
     parser.add_argument("--network", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--gpu", action=argparse.BooleanOptionalAction, default=None)
     parser.add_argument("--gh-proxy", action=argparse.BooleanOptionalAction, default=None)
-    parser.add_argument("--agent-profile", action="append", choices=["codex", "claude"])
+    parser.add_argument("--agent-profile", action="append", choices=["codex"])
+    parser.add_argument("--agent-name", help="Use isolated state for this named Codex agent")
     parser.add_argument("--ro", action="append")
     parser.add_argument("--rw", action="append")
     parser.add_argument("command", nargs=argparse.REMAINDER)
@@ -29,7 +30,7 @@ def main(argv=None) -> int:
         for k in ("ro", "rw"):
             if getattr(args, k):
                 overrides[k] = config.get("sandbox", {}).get(k, []) + getattr(args, k)
-        plan = build_plan(root, config, overrides)
+        plan = build_plan(root, config, overrides, agent_name=args.agent_name)
         command = args.command[1:] if args.command[:1] == ["--"] else args.command
         if args.dry_run:
             print(json.dumps({**plan.as_dict(), "command": command or ["bash (interactive)"]}, indent=2))

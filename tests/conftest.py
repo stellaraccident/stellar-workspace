@@ -9,6 +9,8 @@ from stellar_workspace.init import initialize
 def workspace(tmp_path):
     root = tmp_path / 'space with spaces'
     initialize(root, source='/canonical/source')
+    # Ordinary tests must also run on hosts without AMD GPU devices.
+    initialize(root, changes=[['sandbox.gpu', 'false']])
     subprocess.run(['python3', '-m', 'venv', '--without-pip', str(root / '.venv')], check=True)
     return root
 

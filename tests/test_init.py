@@ -20,6 +20,7 @@ def test_primordial_no_site_packages(tmp_path):
     assert (root / 'AGENTS.md').is_file()
     assert not (root / '.venv').exists()
     assert not (root / '.git').exists()
+    assert load(root)['sandbox']['gpu'] is True
     for name in ['add-repository', 'workspace-environment', 'sandbox-workflow', 'local-review']:
         assert (root / 'skills' / name / 'SKILL.md').is_file()
     assert not initialize(root)
