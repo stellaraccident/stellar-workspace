@@ -1,0 +1,5 @@
+Stellar Workspace includes the browser review layout and styles adapted from
+pyre-review, originally distributed under the Apache License, Version 2.0.
+Source: /home/slaurenz/projects/pyre-review (local project supplied by the author).
+The review implementation has been modified for commit-scoped notes, input
+validation, static exports, and removal of issue tracker integrations.

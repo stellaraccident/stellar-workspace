@@ -1,0 +1,12 @@
+/sources/*
+!/sources/.gitkeep
+/build/
+/cache/
+/programs/
+/.tmp/
+/scratch/
+/.venv/
+/.direnv/
+/worktrees/
+__pycache__/
+*.py[cod]

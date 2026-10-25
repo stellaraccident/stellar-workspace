@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stellar-workspace"
+version = "0.1.0"
+description = "Reusable workspace bootstrap, Linux sandbox, and local Git review tools"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+dependencies = ["Pygments>=2.15"]
+
+[project.optional-dependencies]
+test = ["pytest>=7", "build", "wheel"]
+
+[project.scripts]
+sw-init = "stellar_workspace.init:main"
+sw-sandbox = "stellar_workspace.sandbox.cli:main"
+sw-review = "stellar_workspace.review.cli:main"
+sw-agent-readme = "stellar_workspace.agent_readme:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+stellar_workspace = ["resources/*.md", "resources/*.sh", "resources/skills/*/SKILL.md", "resources/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+markers = ["integration: requires local Linux sandbox facilities", "packaging: builds and installs distributions"]

@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sw-review</title>
+<style>
+/* __PYGMENTS_CSS__ */
+
+:root {
+  --bg: #fff;
+  --bg-secondary: #f6f8fa;
+  --bg-hover: #ebedf0;
+  --border: #d0d7de;
+  --text: #1f2328;
+  --text-muted: #656d76;
+  --added-bg: #dafbe1;
+  --added-line-bg: #ccffd8;
+  --deleted-bg: #ffebe9;
+  --deleted-line-bg: #ffc1ba;
+  --comment-bg: #fff8c5;
+  --comment-border: #d4a72c;
+  --accent: #0969da;
+  --accent-emphasis: #0550ae;
+  --header-bg: #24292f;
+  --header-text: #fff;
+  --line-num: #656d76;
+  --scrollbar-bg: #ddd;
+  --scrollbar-thumb: #aaa;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117;
+    --bg-secondary: #161b22;
+    --bg-hover: #21262d;
+    --border: #30363d;
+    --text: #e6edf3;
+    --text-muted: #8b949e;
+    --added-bg: #12261e;
+    --added-line-bg: #1a4028;
+    --deleted-bg: #2d1214;
+    --deleted-line-bg: #4c1a1e;
+    --comment-bg: #2d2200;
+    --comment-border: #9e6a03;
+    --accent: #58a6ff;
+    --accent-emphasis: #79c0ff;
+    --header-bg: #010409;
+    --header-text: #e6edf3;
+    --line-num: #484f58;
+    --scrollbar-bg: #21262d;
+    --scrollbar-thumb: #484f58;
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; background: var(--bg); color: var(--text); }
+
+#header {
+  background: var(--header-bg);
+  color: var(--header-text);
+  padding: 8px 16px;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+#header h1 { font-size: 14px; font-weight: 600; }
+#header .stats { font-size: 13px; color: var(--text-muted); }
+#header .stats .add { color: #3fb950; }
+#header .stats .del { color: #f85149; }
+#header .actions { margin-left: auto; display: flex; gap: 8px; }
+.btn {
+  padding: 5px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg-secondary);
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+}
+.btn:hover { background: var(--bg-hover); }
+.btn-approve { background: #238636; color: #fff; border-color: #238636; }
+.btn-approve:hover { background: #2ea043; }
+.btn-changes { background: #da3633; color: #fff; border-color: #da3633; }
+.btn-changes:hover { background: #e5534b; }
+
+#main {
+  display: flex;
+  height: calc(100vh - 40px);
+}
+
+/* File tree */
+#file-tree {
+  width: 280px;
+  min-width: 200px;
+  border-right: 1px solid var(--border);
+  overflow-y: auto;
+  background: var(--bg-secondary);
+  font-size: 13px;
+}
+#file-tree::-webkit-scrollbar { width: 6px; }
+#file-tree::-webkit-scrollbar-track { background: var(--scrollbar-bg); }
+#file-tree::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 3px; }
+
+.tree-item {
+  padding: 4px 8px 4px 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border-left: 3px solid transparent;
+}
+.tree-item:hover { background: var(--bg-hover); }
+.tree-item.active { background: var(--bg-hover); border-left-color: var(--accent); font-weight: 600; }
+.tree-item .status { font-size: 11px; font-weight: 600; width: 16px; text-align: center; }
+.tree-item .status.A { color: #3fb950; }
+.tree-item .status.M { color: #d29922; }
+.tree-item .status.D { color: #f85149; }
+.tree-item .has-comments { color: var(--comment-border); font-size: 11px; }
+.tree-dir {
+  padding: 4px 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--text-muted);
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.tree-dir:hover { background: var(--bg-hover); }
+.tree-dir .arrow { transition: transform 0.15s; display: inline-block; }
+.tree-dir.collapsed .arrow { transform: rotate(-90deg); }
+.tree-dir.collapsed + .tree-children { display: none; }
+
+/* File view */
+#file-view {
+  flex: 1;
+  overflow: auto;
+  font-family: "SF Mono", "Fira Code", "Fira Mono", Menlo, Consolas, monospace;
+  font-size: 13px;
+  line-height: 20px;
+}
+#file-view::-webkit-scrollbar { width: 8px; height: 8px; }
+#file-view::-webkit-scrollbar-track { background: var(--scrollbar-bg); }
+#file-view::-webkit-scrollbar-thumb { background: var(--scrollbar-thumb); border-radius: 4px; }
+
+.file-header {
+  padding: 8px 16px;
+  background: var(--bg-secondary);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+  font-weight: 600;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+.file-header .file-stats { font-weight: normal; color: var(--text-muted); font-size: 12px; }
+.file-header .file-stats .add { color: #3fb950; }
+.file-header .file-stats .del { color: #f85149; }
+
+table.code {
+  border-collapse: collapse;
+  width: 100%;
+  table-layout: fixed;
+}
+table.code td {
+  vertical-align: top;
+  padding: 0 8px;
+  white-space: pre;
+  overflow: hidden;
+}
+.ln {
+  width: 50px;
+  min-width: 50px;
+  text-align: right;
+  color: var(--line-num);
+  user-select: none;
+  cursor: pointer;
+  padding-right: 12px !important;
+  border-right: 1px solid var(--border);
+}
+.ln:hover { color: var(--accent); }
+.ln-old { width: 50px; min-width: 50px; }
+.ln-new { width: 50px; min-width: 50px; }
+.code-content { width: 100%; }
+
+tr.line-added { background: var(--added-bg); }
+tr.line-added .code-content { background: var(--added-line-bg); }
+tr.line-deleted { background: var(--deleted-bg); }
+tr.line-deleted .code-content { background: var(--deleted-line-bg); }
+
+/* Change markers */
+tr.line-added .ln-new::before { content: "+"; color: #3fb950; margin-right: 4px; }
+tr.line-deleted .ln-old::before { content: "-"; color: #f85149; margin-right: 4px; }
+
+/* Comments */
+.comment-row td {
+  padding: 8px 16px 8px 120px !important;
+  background: var(--comment-bg);
+  border-top: 1px solid var(--comment-border);
+  border-bottom: 1px solid var(--comment-border);
+  white-space: normal;
+}
+.comment-block {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.5;
+  max-width: 700px;
+}
+.comment-block .comment-header {
+  font-weight: 600;
+  color: var(--text-muted);
+  font-size: 12px;
+  margin-bottom: 4px;
+}
+.comment-block .comment-body { color: var(--text); }
+.comment-block.resolved { opacity: 0.5; }
+.comment-block.resolved .comment-body { display: none; }
+.comment-block.resolved:hover { opacity: 1; cursor: pointer; }
+.resolve-btn {
+  font-size: 11px;
+  color: var(--accent);
+  cursor: pointer;
+  border: none;
+  background: none;
+  padding: 2px 4px;
+}
+
+/* Comment input */
+.comment-input-row td {
+  padding: 8px 16px 8px 120px !important;
+  background: var(--comment-bg);
+  white-space: normal;
+}
+.comment-input-row textarea {
+  width: 100%;
+  max-width: 600px;
+  min-height: 80px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  font-size: 13px;
+  resize: vertical;
+}
+.comment-input-row .input-actions {
+  margin-top: 6px;
+  display: flex;
+  gap: 6px;
+}
+
+/* Verdict dialog */
+#verdict-dialog {
+  display: none;
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 24px;
+  z-index: 200;
+  min-width: 400px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+}
+#verdict-dialog textarea {
+  width: 100%;
+  min-height: 80px;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  margin: 12px 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 13px;
+}
+#verdict-dialog .dialog-actions { display: flex; gap: 8px; justify-content: flex-end; }
+#overlay {
+  display: none;
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  z-index: 150;
+}
+
+/* Toast notifications */
+.toast {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  padding: 10px 16px;
+  background: var(--header-bg);
+  color: var(--header-text);
+  border-radius: 6px;
+  font-size: 13px;
+  z-index: 300;
+  opacity: 0;
+  transition: opacity 0.3s;
+}
+.toast.show { opacity: 1; }
+
+/* Keyboard help */
+#keyboard-help {
+  position: fixed;
+  bottom: 20px;
+  left: 20px;
+  font-size: 11px;
+  color: var(--text-muted);
+  background: var(--bg-secondary);
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
+kbd {
+  background: var(--bg-hover);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 11px;
+  font-family: inherit;
+}
+</style>
+</head>
+<body>
+
+<div id="header">
+  <h1 id="review-title"></h1>
+  <span class="stats" id="review-stats"></span>
+  <div class="actions">
+    <button class="btn btn-approve" onclick="showVerdict('approve')">Approve</button>
+    <button class="btn btn-changes" onclick="showVerdict('request-changes')">Request Changes</button>
+  </div>
+</div>
+
+<div id="main">
+  <div id="file-tree"></div>
+  <div id="file-view">
+    <div style="padding: 40px; color: var(--text-muted); text-align: center;">
+      Select a file from the tree to begin reviewing.
+    </div>
+  </div>
+</div>
+
+<div id="overlay" onclick="hideVerdict()"></div>
+<div id="verdict-dialog">
+  <h3 id="verdict-title">Submit Review</h3>
+  <textarea id="verdict-body" placeholder="Add a summary comment (optional)..."></textarea>
+  <div class="dialog-actions">
+    <button class="btn" onclick="hideVerdict()">Cancel</button>
+    <button class="btn" id="verdict-submit-btn" onclick="submitVerdict()">Submit</button>
+  </div>
+</div>
+
+<div id="keyboard-help">
+  <kbd>j</kbd>/<kbd>k</kbd> files &nbsp;
+  <kbd>n</kbd>/<kbd>N</kbd> comments &nbsp;
+  <kbd>]</kbd>/<kbd>[</kbd> changes
+</div>
+
+<div class="toast" id="toast"></div>
