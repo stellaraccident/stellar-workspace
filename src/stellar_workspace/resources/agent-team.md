@@ -2,21 +2,27 @@
 
 Operator setup: `sw-init --team`, then `sw-agent install-br --dry-run`,
 `sw-agent install-br`, `sw-agent init-beads`, and `sw-agent doctor`.
-Requires Linux/Bubblewrap, tmux, br 0.7.6 and Codex native queue/remote App Server
+Requires Linux/Bubblewrap, br 0.7.6 and Codex native queue/remote App Server
 (tested with 0.162.1). Existing trackers are preserved, never migrated implicitly.
-The operator starts workers once from the external shell; sandboxed agents manage
-beads and scheduling modes, and do not launch nested supervisors.
+The human chooses a terminal and runs `sw-agent start NAME`; it stays in the
+foreground and opens the native Codex UI there. Every launch defaults to human
+mode. Only explicit `start NAME --auto` or `auto NAME` enables assigned-bead
+pickup. Never silently restore automation because the previous run used it.
 
-The operator starts a normal Codex lead with `sw-agent start lead`, then visits
-it with `sw-agent visit lead`. Named workers have persistent conversations and
-native Codex terminal UIs. They are not per-bead batch jobs. `visit NAME` sets
-human mode and opens the same UI; `auto NAME` returns scheduling to assigned work.
-`watch NAME` attaches read-only without changing mode. Detach with tmux's normal
-Ctrl-b d. Do not restart/replace a conversation to send it another assignment.
+SW does not manage terminal windows, panes or tmux sessions. The human chooses
+which terminal runs each agent. Do not start agents on the human's behalf or
+suggest a start loop: the first foreground launch stays open. Sandboxed agents
+manage beads and scheduling modes; nested supervisors are unsupported.
+
+`visit NAME` opens an additional native connection in the caller's current
+terminal and sets human mode; leaving the visit leaves the owning start running.
+Quitting the owning native UI stops its controller/backend and returns the shell.
+History survives; another start resumes the same conversation in human mode.
+Use status/logs for inspection. Keep the owning terminal alive to keep work alive.
 
 Scope options work before or after subcommands: `sw-agent --workspace PATH --machine ...`.
 Normal workspace discovery also uses SW_WORKSPACE / nearest workspace.toml.
-Commands: start/visit/watch/auto/pause/stop/status/logs/send, assign ID NAME,
+Commands: start/visit/auto/pause/stop/status/logs/send, assign ID NAME,
 claim ID [--name NAME], checkpoint --state working|waiting|review|needs-human
 [--bead ID], beads ARGS..., motd [show|status|ack REVISION], maintenance
 status|request|release [--reason TEXT]. In workers, SW_AGENT supplies identity.

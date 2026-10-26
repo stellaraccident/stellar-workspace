@@ -8,5 +8,6 @@ tmp/scratch, logs, programs and client state. Your identity survives bead change
 Use the canonical workspace tracker, never initialize one in this directory.
 Read workspace/machine MOTD before new tasks and GPU work. Automatic wake messages
 are hints: verify your current mode, assignment and ready status before claiming.
-Human conversation takes priority. A human visit pauses automatic pickup until
+Every launch defaults to human mode; automatic pickup requires explicit human
+opt-in. Human conversation takes priority. A human visit pauses automatic pickup until
 `sw-agent auto __AGENT__` explicitly returns it to auto.

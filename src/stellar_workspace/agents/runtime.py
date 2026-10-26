@@ -12,8 +12,8 @@ import shlex
 import shutil
 import signal
 import subprocess
-import sys
 import tempfile
+import termios
 import time
 
 from ..workspace import WorkspaceError, load
@@ -55,21 +55,6 @@ def codex_binary(root, config):
     if not found:
         raise WorkspaceError('Codex CLI not found; configure team.codex with its executable path')
     return str(Path(found).resolve())
-
-
-def tmux(*args, check=True):
-    result = subprocess.run(['tmux', *args], capture_output=True, text=True, timeout=15)
-    if check and result.returncode:
-        raise WorkspaceError('tmux: ' + result.stderr.strip())
-    return result
-
-
-def session_name(root, name):
-    return f'sw-{state.workspace_id(root)}-{name}'
-
-
-def launcher(*args):
-    return [sys.executable, '-m', 'stellar_workspace.agents.cli', *map(str, args)]
 
 
 def notices(root, config):
@@ -174,7 +159,8 @@ def worker_plan(root, name, config, spec, runtime_dir):
 
 
 def _backend(plan, command, log):
-    with open(log, 'a', buffering=1) as output:
+    with open(os.devnull) as input_stream, open(log, 'a', buffering=1) as output:
+        os.dup2(input_stream.fileno(), 0)
         os.dup2(output.fileno(), 1)
         os.dup2(output.fileno(), 2)
         raise SystemExit(execute(plan, command))
@@ -250,7 +236,29 @@ def cycle(root, name, config, client):
     return True
 
 
-def run(root, name):
+def terminal_attributes():
+    try:
+        return termios.tcgetattr(0)
+    except (OSError, termios.error):
+        return None
+
+
+def restore_terminal(attributes):
+    if attributes is not None:
+        try:
+            termios.tcsetattr(0, termios.TCSANOW, attributes)
+        except (OSError, termios.error):
+            pass # The human may have closed/disconnected the terminal itself.
+
+
+def frontend(root, name, config, value):
+    """Run the native UI on the caller's terminal, without a window manager."""
+    command = [codex_binary(root, config), '--remote', 'unix://' + value['socket'],
+               '--no-alt-screen', 'resume', value['thread']]
+    return subprocess.Popen(command, cwd=root / 'agents' / name, env=frontend_env(root, name))
+
+
+def run(root, name, *, auto=False):
     config, spec = roster(root, name)
     beads.qualify(root, config)
     if not (root / '.beads').is_dir():
@@ -266,9 +274,13 @@ def run(root, name):
         process = multiprocessing.get_context('fork').Process(target=_backend, args=(plan, command, str(root / f'agents/{name}/logs/backend.log')))
         process.start()
         stopping = False
-        def stop(*_):
+        native = None
+        terminal = terminal_attributes()
+        def stop(signum, *_):
             nonlocal stopping
-            stopping = True
+            # While the TUI is open, let it handle interactive Ctrl-C itself.
+            if signum != signal.SIGINT or native is None:
+                stopping = True
         previous = {sig: signal.signal(sig, stop) for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP)}
         try:
             deadline = time.monotonic() + 25
@@ -293,7 +305,7 @@ def run(root, name):
                 state.write(base / 'notices.json', {'revision': revision, 'content': content})
                 with state.transaction(root, name) as value:
                     value.update(pid=os.getpid(), birth=state.identity(os.getpid()), socket=str(sock), thread=thread,
-                                 mode=('needs-human' if old.get('active_bead') else old.get('mode', 'human' if spec['role'] == 'lead' else 'auto')),
+                                 mode=('needs-human' if old.get('active_bead') else ('auto' if auto else 'human')),
                                  stop=False, stop_after_task=False, ready=False, error=None, motd_revision=revision,
                                  client_status='idle', started=time.time(), workspace=str(root), name=name,
                                  poll_seconds=config['team'].get('poll_seconds', 5))
@@ -301,76 +313,88 @@ def run(root, name):
                 shared = shared_root(config)
                 if (shared / 'control/stellar-shared.json').is_file():
                     state.write(shared / 'control/workspaces' / f'{state.workspace_id(root)}.json', {'workspace': str(root)})
-                # Separate native UI window; it attaches to the same thread/backend.
-                ui = launcher('--workspace', root, '_ui', name)
-                tmux('new-window', '-d', '-t', session_name(root, name), '-n', 'ui', '-c', str(root), shlex.join(ui))
-                tmux('set-window-option', '-t', session_name(root, name) + ':ui', 'remain-on-exit', 'on')
+                native = frontend(root, name, config, value)
                 with state.transaction(root, name) as value:
                     value['ready'] = True
                 client.call('thread/unsubscribe', {'threadId': thread})
-                while not stopping:
+                next_poll = 0.0
+                while not stopping and native.poll() is None:
                     if not process.is_alive():
                         raise WorkspaceError('Sandboxed Codex backend exited; inspect backend.log')
-                    try:
-                        if not cycle(root, name, config, client):
-                            break
-                    except Exception as exc:
-                        with state.transaction(root, name) as value:
-                            value.update(error=str(exc), mode='needs-human')
-                        print(f'Worker {name}: {exc}', flush=True)
-                    time.sleep(config['team'].get('poll_seconds', 5))
+                    if time.monotonic() >= next_poll:
+                        try:
+                            if not cycle(root, name, config, client):
+                                break
+                        except Exception as exc:
+                            with state.transaction(root, name) as value:
+                                value.update(error=str(exc), mode='needs-human')
+                            with (root / f'agents/{name}/logs/controller.log').open('a') as log:
+                                log.write(f'{time.time()}: {exc}\n')
+                        next_poll = time.monotonic() + config['team'].get('poll_seconds', 5)
+                    time.sleep(.1)
+                return native.returncode if native.returncode is not None else 0
         finally:
+            # Close the UI first so it restores the caller's terminal.
+            if native is not None and native.poll() is None:
+                native.terminate()
+                try:
+                    native.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    native.kill()
+                    native.wait()
+            restore_terminal(terminal)
             process.terminate()
             process.join(timeout=5)
             if process.is_alive():
                 process.kill()
                 process.join()
             with state.transaction(root, name) as value:
-                value.update(client_status='stopped', ready=False, stopped=time.time())
+                value.update(client_status='stopped', ready=False, mode='paused', stopped=time.time())
                 value.pop('pid', None)
                 value.pop('birth', None)
             for sig, handler in previous.items():
                 signal.signal(sig, handler)
 
 
-def start(root, name):
+def require_terminal():
+    if not (os.isatty(0) and os.isatty(1)):
+        raise WorkspaceError('Run this command in the interactive terminal you want the agent to occupy')
+
+
+def start(root, name, *, auto=False):
     if os.environ.get('SW_SANDBOX') == '1':
-        raise WorkspaceError('Start persistent workers from the external operator shell; nested sandbox supervisors are unsupported')
-    config, spec = roster(root, name)
+        raise WorkspaceError('Start workers from the external operator shell; nested sandbox supervisors are unsupported')
+    require_terminal()
+    roster(root, name)
     current = state.read(state.directory(root, name) / 'state.json')
     if state.alive(current):
-        return current
-    if not shutil.which('tmux'):
-        raise WorkspaceError('tmux is required for persistent interactive workers')
-    # Resolve dependencies before creating any terminal process.
-    codex_binary(root, config)
-    beads.qualify(root, config)
-    if not (root / '.venv/bin/python').exists():
-        raise WorkspaceError('Activate this workspace direnv venv and install stellar-workspace first')
-    if not (root / '.beads').is_dir():
-        raise WorkspaceError('Run sw-agent init-beads before starting a worker')
-    session = session_name(root, name)
-    if tmux('has-session', '-t', session, check=False).returncode == 0:
-        raise WorkspaceError('A previous tmux session remains; inspect it before removing/restarting it: ' + session)
-    command = launcher('--workspace', root, '_run', name)
-    tmux('new-session', '-d', '-s', session, '-n', 'controller', '-c', str(root), shlex.join(command))
-    deadline = time.monotonic() + 30
-    while time.monotonic() < deadline:
-        value = state.read(state.directory(root, name) / 'state.json')
-        if state.alive(value) and value.get('ready') and value.get('socket') and Path(value['socket']).exists():
-            return value
-        if tmux('has-session', '-t', session, check=False).returncode:
-            break
-        time.sleep(.1)
-    raise WorkspaceError('Worker did not become ready; inspect its tmux controller and backend.log')
+        raise WorkspaceError('Worker is already running in its chosen terminal; use sw-agent visit ' + name + ' to connect here')
+    return run(root, name, auto=auto)
 
 
 def ui(root, name):
+    require_terminal()
     config, _ = roster(root, name)
     value = state.read(state.directory(root, name) / 'state.json')
     if not state.alive(value):
-        raise WorkspaceError('Worker is not running')
-    command = [codex_binary(root, config), '--remote', 'unix://' + value['socket'],
-               '--no-alt-screen', 'resume', value['thread']]
-    os.chdir(root / 'agents' / name)
-    os.execve(command[0], command, frontend_env(root, name))
+        raise WorkspaceError('Worker is not running; use sw-agent start ' + name + ' here')
+    terminal = terminal_attributes()
+    native = frontend(root, name, config, value)
+    def forward(signum, *_):
+        if native.poll() is None:
+            native.send_signal(signum)
+    previous = {sig: signal.signal(sig, forward) for sig in (signal.SIGTERM, signal.SIGHUP)}
+    try:
+        code = native.wait()
+        return code if code >= 0 else 128 - code
+    finally:
+        if native.poll() is None:
+            native.terminate()
+            try:
+                native.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                native.kill()
+                native.wait()
+        restore_terminal(terminal)
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)

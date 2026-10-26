@@ -34,8 +34,11 @@ JSON via `comments REV --unresolved`, `add-comment`, `resolve`, `unresolve`,
 follow new commits/rebases, and are local unless explicitly synchronized.
 
 Optional named teams use `sw-init --team`, then explicit br installation/tracker
-setup. `sw-agent start NAME` creates a persistent sandboxed Codex session;
-`visit NAME` opens its native UI and suspends automatic pickup until `auto NAME`.
+setup. The human runs `sw-agent start NAME` in their chosen terminal; its native
+UI stays in the foreground, and exiting stops that launch. Each launch defaults
+to human mode; `--auto` or `auto NAME` explicitly enables assigned-bead pickup.
+`visit NAME` connects in the caller's terminal and suspends pickup until `auto NAME`.
+SW never manages panes, windows or tmux sessions.
 Use canonical `sw-agent beads`, conditional `claim`, and recorded checkpoints.
 Read workspace/shared MOTDs, respect peer areas, and use machine IT for shared
 models/ROCm work when asked. See `sw-agent-readme team` and `machine`.

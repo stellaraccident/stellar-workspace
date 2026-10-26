@@ -87,9 +87,11 @@ def main(argv=None):
     parser.add_argument('--workspace')
     parser.add_argument('--machine', action='store_true', help='Target the shared IT workspace')
     sub = parser.add_subparsers(dest='command', required=True)
-    for command in ('start', 'visit', 'watch', 'auto', 'pause', 'stop', 'status', 'logs', '_run', '_ui'):
+    for command in ('start', 'visit', 'auto', 'pause', 'stop', 'status', 'logs'):
         p = sub.add_parser(command)
         p.add_argument('name', nargs='?' if command == 'status' else None)
+        if command == 'start':
+            p.add_argument('--auto', action='store_true', help='Explicitly enable assigned-bead pickup for this run')
         if command == 'stop':
             p.add_argument('--after-task', action='store_true')
         if command == 'status':
@@ -161,7 +163,7 @@ def main(argv=None):
             result = {'workspace': str(root), 'br': beads.qualify(root, config),
                       'codex': runtime.codex_binary(root, config), 'tracker': (root / '.beads').is_dir(),
                       'shared_initialized': (runtime.shared_root(config) / 'control/stellar-shared.json').is_file(),
-                      'tmux': shutil.which('tmux'), 'bubblewrap': shutil.which('bwrap')}
+                      'bubblewrap': shutil.which('bwrap')}
             probe = subprocess.run([result['codex'], 'queue', '--help'], capture_output=True, text=True, timeout=15)
             result['native_queue'] = probe.returncode == 0 and '--thread' in probe.stdout
         elif args.command in ('status', 'motd'):
@@ -232,16 +234,8 @@ def main(argv=None):
             config, spec = runtime.roster(root, name)
             if spec['role'] == 'it' and not args.machine and root != runtime.shared_root(config) / 'it':
                 raise WorkspaceError('IT is machine-wide; use sw-agent --machine start it')
-            if args.command == '_run':
-                runtime.run(root, name)
-                # Normal shutdown has released locks, sockets and backend first.
-                runtime.tmux('kill-session', '-t', runtime.session_name(root, name), check=False)
-                return 0
-            if args.command == '_ui':
-                runtime.ui(root, name)
-                return 0
             if args.command == 'start':
-                result = runtime.start(root, name)
+                return runtime.start(root, name, auto=args.auto)
             elif args.command == 'logs':
                 path = contained(root, f'agents/{name}/logs/backend.log')
                 if args.follow:
@@ -249,6 +243,8 @@ def main(argv=None):
                 print(path.read_text()[-32_000:])
                 return 0
             else:
+                if args.command == 'visit':
+                    runtime.require_terminal()
                 with state.transaction(root, name) as value:
                     if not state.observed_alive(value):
                         raise WorkspaceError('Worker is not running; use sw-agent start ' + name)
@@ -263,13 +259,12 @@ def main(argv=None):
                     elif args.command == 'send':
                         runtime.queue(root, config, name, value, args.message)
                     result = dict(value)
-                if args.command in ('visit', 'watch'):
-                    target = runtime.session_name(root, name) + ':ui'
-                    if args.command == 'watch':
-                        return subprocess.call(['tmux', 'attach-session', '-r', '-t', target])
-                    return subprocess.call(['tmux', 'switch-client' if os.environ.get('TMUX') else 'attach-session', '-t', target])
+                if args.command == 'visit':
+                    return runtime.ui(root, name)
         print(json.dumps(result, indent=2))
         return 0
+    except KeyboardInterrupt:
+        return 130
     except (WorkspaceError, OSError, ValueError, subprocess.SubprocessError) as exc:
         print(f'sw-agent: {exc}', file=sys.stderr)
         return 1

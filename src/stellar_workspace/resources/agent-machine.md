@@ -3,7 +3,8 @@
 `sw-agent init-shared [--path ~/agent-shared] [--dry-run]` explicitly creates the
 machine area and its IT workspace; ordinary project init never creates it.
 Activate/install that workspace's own direnv venv, then install/initialize br
-there. `sw-agent --machine start it` targets the same IT workspace from projects
+there. `sw-agent --machine start it` runs IT in the chosen foreground terminal,
+in human mode unless --auto is explicitly selected. It targets that workspace from projects
 configured with the same team.shared_root. It is not a new IT agent per project.
 
 Shared layout: MOTD.md, models/, rocm/, manifests/, staging/, control/, it/.

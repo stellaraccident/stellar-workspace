@@ -9,7 +9,10 @@ Claude support has been removed.
 
 Each workspace has one beads-rust tracker and a roster of named workers. Each
 worker has a persistent Codex conversation, a native interactive terminal UI in
-tmux, and a small Python controller. The controller polls local state; idle
+the terminal chosen by the human, and a small Python controller. `start` stays
+in the foreground and owns its backend until the UI exits. The tool never
+creates, switches, attaches or destroys terminal windows, panes or tmux sessions.
+The controller polls local state; idle
 workers make no model calls. Ready assignments and changed MOTDs trigger targeted
 `codex queue` messages addressed to the recorded thread UUID and private backend.
 There is no terminal typing automation, batch-exec loop, or custom transcript UI.
@@ -18,10 +21,12 @@ Start with `lead`, coders `ada` and `grace`, reviewer `lin`, and a machine-wide
 `it` agent. Names and roles live in `workspace.toml`; edit the roster before
 running `sw-init --team` to generate instructions for additional names. Roles are
 `lead`, `coder`, `reviewer`, and `it`. Names are lowercase identifiers, up to 32
-characters. The default lead starts in human mode; other workers start in auto.
+characters. Every launch starts in human mode unless the human explicitly
+passes `--auto`; an unfinished active bead still forces `needs-human`. Previous
+auto mode is never silently restored.
 Starting is explicit and runs from the external operator shell. A sandboxed lead
-coordinates tasks; it does not launch nested supervisors. An ordinary operator
-Codex session outside the sandbox can run those same start commands when asked.
+coordinates tasks; it does not launch nested supervisors. The human launches each foreground UI in its chosen terminal; agents ask when
+another worker is needed.
 
 Keep task state and handoffs in beads, source changes in Git, review feedback in
 Git notes through `sw-review`, and current operational announcements in MOTD.
@@ -41,7 +46,7 @@ sw-agent init-beads
 sw-agent doctor
 ```
 
-Dependencies are Linux, working Bubblewrap/user namespaces, tmux, Codex with
+Dependencies are Linux, working Bubblewrap/user namespaces, Codex with
 native `queue`, Unix App Server and remote resume support, plus beads-rust
 **0.7.6**. The implementation was exercised with Codex **0.162.1** and the actual
 br 0.7.6 release. Codex APIs are experimental; qualify upgrades using the native
@@ -65,19 +70,20 @@ upgrading; there is no automatic JSONL recovery.
 ## How you interact as operator
 
 ```bash
-for name in lead ada grace lin; do sw-agent start "$name"; done
-sw-agent visit lead
+# Run in the terminal you want to be the lead:
+sw-agent start lead
+# In a different terminal you choose, explicitly enable Ada's bead pickup:
+sw-agent start ada --auto
 ```
 
 Talk normally: “Create beads for these two tasks, assign Ada and Grace, and arrange Lin's review.” The installed instructions explain the commands
-and boundaries to the lead. Starting workers once is operator setup; each task
-assignment thereafter wakes the appropriate running worker automatically. You can keep this conversation open as your main
+and boundaries to the lead. Open each worker in a terminal of your choosing.
+Assigned work wakes a running worker only after `--auto` or `sw-agent auto NAME`. You can keep this conversation open as your main
 interface; use the shell commands whenever that is more convenient.
 
 ```bash
-sw-agent start ada           # idempotent while its controller is running
-sw-agent visit ada           # native Codex UI; switches pickup to human mode
-sw-agent watch ada           # read-only tmux attachment; pickup mode unchanged
+sw-agent start ada           # foreground UI here; starts in human mode
+sw-agent visit ada           # additional native UI here; switches to human mode
 sw-agent send ada 'Report your progress and park at the next safe checkpoint.'
 sw-agent pause ada           # suspend new automatic task pickup
 sw-agent auto ada            # explicitly return scheduling to automation
@@ -87,27 +93,40 @@ sw-agent stop ada --after-task
 sw-agent stop ada
 ```
 
-Detach tmux using its normal prefix then `d`; the worker keeps running. Detach
-does **not** resume automation. `visit` takes scheduling control before attaching;
-`auto` explicitly returns it. Native Codex input supports discussion, follow-ups,
-steering and interruption in the same conversation. `send` queues a follow-up;
-it does not promise immediate mid-tool interruption. Already queued work cannot
-be recalled by pause, so the wake prompt tells the agent to recheck its mode.
-Human input takes priority by instruction.
+Usually return to the worker's original terminal yourself. `visit` is an optional
+additional connection from whichever terminal you choose; existing terminals
+stay where they are. Leaving a visit closes that connection; the owning `start`
+continues running. Closing the owning UI stops its controller/backend and returns
+the shell. To keep work running, keep that terminal/session alive. There is no
+implicit detach, background launch or automatic restart after disconnect/reboot.
+You may manage your own terminal multiplexer if you want; SW does not manage it.
 
-`--after-task` waits for the current Codex turn to become idle, not for an entire
-multi-turn bead to finish. Immediate stop terminates the sandboxed backend; it
-cannot promise rollback of a running tool. Normal stop removes the owned tmux
-session and private sockets. Conversation history remains in the agent's state,
-and a subsequent start resumes its UUID and scheduling mode. If an active bead survived shutdown,
-restart enters `needs-human` to prevent silent reclamation. Inspect the bead and
-files, give recovery instructions, then explicitly choose `auto` when appropriate.
+`visit` takes scheduling control before opening; `auto` explicitly returns it.
+Native Codex input supports discussion, follow-ups, steering and interruption in
+the same conversation. `send` queues a follow-up; it does not promise immediate
+mid-tool interruption. Already queued work cannot be recalled by pause, so the
+wake prompt tells the agent to recheck its mode. Human input takes priority.
+`watch` and the internal tmux launch commands have been removed; use `status` or
+`logs` for inspection, and `visit` for interaction.
 
-A tmux session left after a controller crash is retained for inspection. Inspect
-its controller window and backend log before removing that exact session and
-restarting. There is no automatic restart after a crash or reboot. If you quit
-the native UI, stop/start the worker to reopen it; detach when you merely want
-to leave it working. Never attach a second independent scheduler to these workers.
+`--after-task` waits for the current Codex turn to become idle, not an entire
+multi-turn bead. Immediate stop terminates the backend and cannot roll back a
+running tool. Normal exit/stop removes the private sockets and retains local
+conversation history. A subsequent `start` resumes its UUID in human mode; an
+unfinished active bead instead enters `needs-human`. Inspect the bead/files,
+give recovery instructions, then explicitly choose `auto` when appropriate.
+
+### Moving from the old tmux workflow
+
+Old running processes retain the old behavior until stopped. From an external
+shell, inspect `sw-agent status`, pause the named workers you want to park, and
+request `sw-agent stop NAME --after-task` when appropriate. Inspect unfinished
+beads and dirty work; stopping does not undo changes. Reinstall this checkout in
+the workspace venv, then launch one agent per terminal you choose. No new code
+attaches to or cleans up old tmux sessions. Do not use broad tmux kill commands.
+
+Template upgrades preserve edited instructions; manually reconcile any old
+start-loops, tmux navigation instructions or default-auto advice in custom files.
 
 ## Tasks, claims, and handoffs
 
@@ -294,9 +313,11 @@ Linux sandbox tests inspect GitHub and PyPI token invisibility, including named
 Codex profiles. Packaging tests exercise installed entry points and templates.
 
 Native integration tests use the actual Codex binary, a disposable local fake
-Responses provider, private tmux server, real br and Bubblewrap. They verify native
+Responses provider, caller-selected PTYs, real br and Bubblewrap. They verify native
 UI output, typed human input during an active turn, later queued work in the same
-thread, idle without inference, human-mode suspension, notices and shutdown.
+thread, idle without inference, explicit opt-in pickup, human-mode suspension,
+notices, UI-owned shutdown and restart. A trap executable verifies tmux is never
+invoked, including when the human terminal already has a TMUX variable.
 No production credentials or paid model calls are used. Set `SW_TEST_BR` to a
 qualified br 0.7.6 binary; optionally `SW_TEST_CODEX` selects Codex. Missing
 external tools skip the corresponding tests, so inspect the reported skips.

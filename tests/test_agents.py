@@ -167,19 +167,34 @@ def test_no_model_call_when_idle_or_maintenance(team,tmp_path,monkeypatch):
     assert 'maintenance' in state.read(state.directory(team,'ada')/'state.json')['waiting_reason']
 
 
-def test_operator_visit_pauses_before_attach_and_auto_explicit(team,monkeypatch,capsys):
+def test_operator_visit_uses_callers_terminal_and_auto_explicit(team,monkeypatch,capsys):
     setup_state(team)
     called=[]
-    def attach(args):
+    monkeypatch.setattr(runtime,'require_terminal',lambda:None)
+    def visit(root,name):
         assert state.read(state.directory(team,'ada')/'state.json')['mode']=='human'
-        called.append(args)
+        called.append((root,name))
         return 0
-    monkeypatch.setattr(subprocess,'call',attach)
+    monkeypatch.setattr(runtime,'ui',visit)
     assert main(['--workspace',str(team),'visit','ada'])==0
-    assert called and ':ui' in called[0][-1]
-    assert state.read(state.directory(team,'ada')/'state.json')['mode']=='human'
+    assert called==[(team,'ada')]
     assert main(['--workspace',str(team),'auto','ada'])==0
     assert state.read(state.directory(team,'ada')/'state.json')['mode']=='auto'
+
+
+def test_foreground_start_requires_terminal_and_explicit_auto(team,monkeypatch):
+    calls=[]
+    monkeypatch.setattr(os,'isatty',lambda fd:False)
+    with pytest.raises(WorkspaceError,match='interactive terminal'):
+        runtime.start(team,'ada')
+    monkeypatch.setattr(os,'isatty',lambda fd:True)
+    monkeypatch.setattr(runtime,'run',lambda root,name,**kw:calls.append(kw) or 0)
+    assert main(['--workspace',str(team),'start','ada'])==0
+    assert main(['--workspace',str(team),'start','ada','--auto'])==0
+    assert calls==[{'auto':False},{'auto':True}]
+    setup_state(team)
+    with pytest.raises(WorkspaceError,match='already running'):
+        runtime.start(team,'ada')
 
 
 def test_known_credentials_cannot_be_messages_or_motd(team,monkeypatch):
@@ -337,19 +352,56 @@ def test_native_codex_queue_tui_same_conversation(tmp_path):
                 socket_path.unlink(missing_ok=True)
 
 
+@contextmanager
+def foreground_terminal(command, env):
+    import fcntl, termios, struct
+    master,slave=pty.openpty()
+    fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',40,120,0,0))
+    transcript=[]
+    reading=threading.Event()
+    reading.set()
+    def reader():
+        while reading.is_set():
+            if not select.select([master],[],[],.1)[0]: continue
+            try: data=os.read(master,65536)
+            except OSError: break
+            if not data: break
+            transcript.append(data)
+            if b'\x1b[6n' in data: os.write(master,b'\x1b[1;1R')
+            if b'\x1b[c' in data: os.write(master,b'\x1b[?1;2c')
+    process=subprocess.Popen(command,env=env,stdin=slave,stdout=slave,stderr=slave,start_new_session=True)
+    drain=threading.Thread(target=reader,daemon=True)
+    drain.start()
+    try:
+        yield process,transcript,master
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            try: process.wait(timeout=8)
+            except subprocess.TimeoutExpired: process.kill(); process.wait()
+        reading.clear()
+        drain.join(timeout=2)
+        os.close(master)
+        os.close(slave)
+
+
 @pytest.mark.integration
-def test_persistent_tmux_worker_with_real_sandbox(team,real_br,tmp_path,monkeypatch):
-    import tempfile
+def test_foreground_worker_and_visit_with_real_sandbox(team,real_br,tmp_path,monkeypatch):
     binary=os.environ.get('SW_TEST_CODEX') or shutil.which('codex')
-    if not binary or not shutil.which('tmux') or not shutil.which('bwrap'):
-        pytest.skip('Codex, tmux and Bubblewrap are required')
+    if not binary or not shutil.which('bwrap'):
+        pytest.skip('Codex and Bubblewrap are required')
     home=tmp_path/'host-home'
     home.mkdir()
     monkeypatch.setenv('HOME',str(home))
-    # Never use a user's existing tmux server, configs, model endpoint or auth.
-    with tempfile.TemporaryDirectory(prefix='sw-tm-',dir='/tmp') as tmux_temp, fake_provider(tmp_path) as (port,requests):
-        monkeypatch.setenv('TMUX_TMPDIR',tmux_temp)
-        monkeypatch.delenv('TMUX',raising=False)
+    # Any invocation of tmux fails visibly, even if a human chose a tmux pane.
+    traps=tmp_path/'bin'
+    traps.mkdir()
+    trap=tmp_path/'tmux-was-called'
+    (traps/'tmux').write_text('#!/bin/sh\ntouch '+str(trap)+'\nexit 99\n')
+    (traps/'tmux').chmod(0o755)
+    monkeypatch.setenv('PATH',str(traps)+':'+os.environ['PATH'])
+    monkeypatch.setenv('TMUX','human-selected-terminal')
+    with fake_provider(tmp_path) as (port,requests):
         cfg=team/'workspace.toml'
         text=cfg.read_text().replace('codex = "codex"','codex = '+json.dumps(str(Path(binary).resolve())))
         text=text.replace('br = "programs/br/bin/br"','br = '+json.dumps(real_br['team']['br'])).replace('poll_seconds = 5','poll_seconds = 1')
@@ -357,45 +409,63 @@ def test_persistent_tmux_worker_with_real_sandbox(team,real_br,tmp_path,monkeypa
         local=team/'agents/ada/state/codex'
         local.mkdir(parents=True)
         (local/'config.toml').write_text(f'model = "fixture"\nmodel_provider = "fixture"\n[model_providers.fixture]\nname = "fixture"\nbase_url = "http://127.0.0.1:{port}/v1"\nwire_api = "responses"\nrequires_openai_auth = false\nsupports_websockets = false\n')
-        # Start without work: it must remain idle without model traffic.
-        session=runtime.session_name(team,'ada')
-        try:
-            value=runtime.start(team,'ada')
+        first=json.loads(beads.run(team,load(team),['create','First assigned task','--assignee','ada','--json']))
+        command=[sys.executable,'-m','stellar_workspace.agents.cli','--workspace',str(team)]
+        record=state.directory(team,'ada')/'state.json'
+        def ready():
+            value=state.read(record)
+            return value if value.get('ready') and state.alive(value) else None
+        with foreground_terminal([*command,'start','ada'],dict(os.environ)) as (owner,transcript,master):
+            value=wait_for(ready)
             identifier=value['thread']
-            assert state.alive(value)
-            assert runtime.start(team,'ada')['thread']==identifier
+            assert value['pid']==owner.pid
+            assert value['mode']=='human'
             time.sleep(1.2)
-            assert not requests
-            first=json.loads(beads.run(team,load(team),['create','First assigned task','--assignee','ada','--json']))
+            assert not requests # Ready work must not imply permission to start.
+            assert main(['--workspace',str(team),'auto','ada'])==0
             wait_for(lambda:any('Automatic queue wake' in json.dumps(r) for r in requests))
-            # Native UI window renders the same response; no custom log UI.
-            wait_for(lambda:'Fixture response' in runtime.tmux('capture-pane','-p','-S','-200','-t',session+':ui').stdout)
-            with state.transaction(team,'ada') as current: current['mode']='human'
+            wait_for(lambda:b'Fixture response' in b''.join(transcript))
+            # Visit creates a native UI in this second, explicitly selected terminal.
+            with foreground_terminal([*command,'visit','ada'],dict(os.environ)) as (visitor,visit_text,visit_input):
+                wait_for(lambda:state.read(record).get('mode')=='human')
+                wait_for(lambda:b'codex' in b''.join(visit_text).lower())
+                os.write(visit_input,b'\x1b[200~HUMAN CHOSEN TERMINAL\x1b[201~')
+                time.sleep(.3)
+                os.write(visit_input,b'\r')
+                wait_for(lambda:any('HUMAN CHOSEN TERMINAL' in json.dumps(r) for r in requests))
+                wait_for(lambda:b'Fixture response' in b''.join(visit_text))
+                os.write(visit_input,b'/exit')
+                time.sleep(.3)
+                os.write(visit_input,b'\r')
+                assert visitor.wait(timeout=8)==0
+            assert owner.poll() is None # Leaving a visit does not stop its owner.
+            assert state.read(record)['thread']==identifier
             beads.run(team,load(team),['close',first['id'],'--reason','fixture completed','--json'])
             second=json.loads(beads.run(team,load(team),['create','Second assigned task','--assignee','ada','--json']))
             count=len(requests)
             time.sleep(1.3)
             assert len(requests)==count
-            with state.transaction(team,'ada') as current:
-                current['mode']='auto'
-                current.pop('wake_key',None)
+            assert main(['--workspace',str(team),'auto','ada'])==0
             wait_for(lambda:any(second['id'] in json.dumps(r) for r in requests))
-            latest=state.read(state.directory(team,'ada')/'state.json')
-            assert latest['thread']==identifier
-            (team/'MOTD.md').write_text('Maintenance fixture announcement\n')
-            wait_for(lambda:any('Maintenance fixture announcement' in json.dumps(r) for r in requests))
+            (team/'MOTD.md').write_text('Foreground maintenance announcement\n')
+            wait_for(lambda:any('Foreground maintenance announcement' in json.dumps(r) for r in requests))
+            # Quitting the owning native UI stops the backend and returns the shell.
+            os.write(master,b'/exit')
+            time.sleep(.3)
+            os.write(master,b'\r')
+            assert owner.wait(timeout=12)==0
+            import termios
+            assert termios.tcgetattr(master)[3] & termios.ICANON
+            assert termios.tcgetattr(master)[3] & termios.ECHO
+        assert not state.alive(state.read(record))
+        assert not Path(value['socket']).exists()
+        with foreground_terminal([*command,'start','ada'],dict(os.environ)) as (owner,transcript,master):
+            resumed=wait_for(ready)
+            assert resumed['thread']==identifier
+            assert resumed['mode']=='human' # Never silently resume old auto mode.
             assert main(['--workspace',str(team),'stop','ada'])==0
-            wait_for(lambda:not state.alive(state.read(state.directory(team,'ada')/'state.json')))
-            wait_for(lambda:not Path(value['socket']).exists())
-            wait_for(lambda:runtime.tmux('has-session','-t',session,check=False).returncode != 0)
-            restarted=runtime.start(team,'ada')
-            assert restarted['thread']==identifier
-            assert restarted['mode']=='paused'
-            assert main(['--workspace',str(team),'stop','ada'])==0
-            wait_for(lambda:not state.alive(state.read(state.directory(team,'ada')/'state.json')))
-        finally:
-            # All terminal/backend processes belong to this private test server.
-            runtime.tmux('kill-server',check=False)
+            assert owner.wait(timeout=8)==0
+        assert not trap.exists()
 
 
 @pytest.mark.integration

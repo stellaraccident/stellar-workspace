@@ -9,23 +9,26 @@ unless a step says otherwise.
 
 ```bash
 cd ~/projects/YOUR-WORKSPACE
-sw-agent status
-sw-agent visit lead           # talk normally; plan and assign work here
-# Leave the UI: Ctrl-b, then d.
-sw-agent auto ada             # return Ada to automatic pickup after visiting her
+sw-agent start lead           # Codex runs HERE, in this terminal, in human mode
 ```
 
-Start workers once per running session, from the external shell:
+Choose another terminal/pane yourself, then run one worker there:
 
 ```bash
-for name in lead ada grace lin; do sw-agent start "$name"; done
+sw-agent start ada            # human-led; no automatic bead pickup
+# OR, if you explicitly want assigned work picked up automatically:
+sw-agent start ada --auto
 ```
 
-They pick up ready beads assigned to them without another “go.” They are real,
-persistent Codex conversations. `visit` gives you their native UI and pauses
-new automatic pickup; detaching keeps them alive but leaves that pause in place.
-Use `auto` when you want the worker back on its queue. Use `watch` to look without
-taking scheduling control.
+You own the terminal layout. SW never creates, switches or destroys panes,
+windows or tmux sessions. Keep the owning terminal open while the worker runs.
+Quit its Codex UI to stop that launch and return to the shell; history remains.
+New launches default to human mode, including after a previous auto session.
+
+Usually return to the worker's existing terminal yourself. Optionally run
+`sw-agent visit ada` in another terminal you choose: it connects there and pauses
+new automatic pickup. Leaving that visit keeps the original worker running.
+`sw-agent auto ada` explicitly returns it to its assigned queue.
 
 Jump to [new workspace setup](#set-up-a-new-workspace), [team operation](#start-the-team-then-just-talk),
 [shared IT](#shared-machine-setup-and-the-singleton-it-agent),
@@ -38,9 +41,9 @@ or [troubleshooting](#when-something-looks-stuck).
 | I want to… | Command or action |
 | --- | --- |
 | See who's running and their mode/task | `sw-agent status` |
-| Talk to the coordinator | `sw-agent visit lead` |
-| Look in on Ada without taking over | `sw-agent watch ada` |
-| Discuss/steer Ada's current work | `sw-agent visit ada` |
+| Start the coordinator in this terminal | `sw-agent start lead` |
+| Inspect Ada without opening a UI | `sw-agent status ada` |
+| Discuss/steer Ada's current work | Return to her terminal, or `sw-agent visit ada` here |
 | Give Ada a queued message | `sw-agent send ada 'Report progress at your next checkpoint.'` |
 | Return Ada to assigned work | `sw-agent auto ada` |
 | Suspend new pickup | `sw-agent pause ada` |
@@ -91,7 +94,7 @@ They are not isolated from each other by filesystem access controls.
 ## Set up a new workspace
 
 Prerequisites: Python 3.11+, Git, direnv, Linux/Bubblewrap with working user
-namespaces, tmux and Codex. Managed interactive operation has been tested with
+namespaces and Codex. Managed interactive operation has been tested with
 Codex 0.162.1 and beads-rust 0.7.6; treat those as qualified versions, not a claim
 about whichever release is newest. Pi and omp managed adapters are future work;
 Claude support has been removed.
@@ -175,8 +178,10 @@ Host environment exports alone do not configure the sandbox.
 ## Start the team, then just talk
 
 ```bash
-for name in lead ada grace lin; do sw-agent start "$name"; done
-sw-agent visit lead
+# Choose one terminal per agent; each command stays in the foreground.
+sw-agent start lead
+# In a different terminal, if you want autonomous assigned-bead pickup:
+sw-agent start ada --auto
 ```
 
 For example:
@@ -186,28 +191,32 @@ For example:
 > candidate commits. Keep integration and publication with me. Ask IT for any
 > shared model or ROCm preparation.
 
-Lead begins in human mode; the coders/reviewer begin in auto mode on first start.
-The operator starts processes once. The sandboxed lead assigns and coordinates
-work; it does not launch nested supervisors. An ordinary Codex operator session
-outside the sandbox can run the external start commands when asked.
+Every agent begins in human mode unless you explicitly pass `--auto`.
+The operator chooses where each process runs. The sandboxed lead assigns and coordinates
+work; it does not launch nested supervisors. Agents ask
+you when another worker is needed; you choose its terminal and launch it there.
 
 The roster is `[team.agents.NAME]` in `workspace.toml`. The defaults are `lead`,
 `ada`, `grace`, `lin`, and `it`; IT runs in the shared IT workspace, not separately
 in each project. To add a name, edit the roster and run `sw-init --team` to create
 its instructions. Supported roles: `lead`, `coder`, `reviewer`, `it`.
 
-Detach with **Ctrl-b, then d**. To stop your whole project team, request stops
-explicitly, for example:
+Quit the owning Codex UI when you want that launch to stop. Conversation history
+survives. Closing an optional `visit` closes only that additional UI connection.
+There is no background launch or automatic restart after disconnect/reboot.
+You can manage your own terminal multiplexer; SW never operates it.
+
+You can also request a stop from another shell:
 
 ```bash
-for name in lead ada grace lin; do sw-agent stop "$name" --after-task; done
+sw-agent stop ada --after-task
 sw-agent status
 ```
 
-There is no automatic restart after a reboot or crash. Normal stop retains
-history; start resumes the same thread and scheduling mode. A worker stopped
-through the stop command remains paused on restart until `auto`. If it had an
-active bead, restart requires human reconciliation before more automatic work.
+`--after-task` waits for the current turn to become idle. A new start resumes
+the same conversation in human mode, even if the previous launch was auto. An
+unfinished active bead forces `needs-human`: reconcile its work before enabling
+pickup again. Do not use a start loop: the first foreground launch stays open.
 
 ## Beads without tab-hopping
 
@@ -254,8 +263,7 @@ direnv allow
 python -m pip install "$HOME/projects/stellar-workspace"
 sw-agent install-br
 sw-agent init-beads
-sw-agent --machine start it
-sw-agent --machine visit it
+sw-agent --machine start it     # foreground here; human mode
 ```
 
 The IT workspace has its own venv, tracker and conversation. Shared siblings are
@@ -394,10 +402,12 @@ and SSH tunnel running while reviewing. The server listens on remote loopback.
 ## SSH + Windows Terminal + tmux
 
 These are the tested setup notes from [docs/machine-setup.md](docs/machine-setup.md).
+They apply to ordinary SSH terminals too. Tmux is entirely optional and managed
+by you; SW never sends terminal-navigation commands.
 
 | Action | Keys |
 | --- | --- |
-| Leave a running tmux session | Ctrl-b, release, then d |
+| End the owning agent launch | Quit its Codex UI; the shell returns |
 | Select text locally instead of sending mouse events to Codex/tmux | Hold Shift while dragging |
 | Copy the selection to Windows | Ctrl+Shift+C |
 | Paste into another session | Ctrl+Shift+V |
@@ -471,16 +481,29 @@ check that selection before operating across projects.
 | Symptom | First checks and recovery |
 | --- | --- |
 | `sw-*` missing or wrong Python | Activate this workspace's direnv; verify `.venv/bin/python`; install here. For Codex shell commands, check `allow_login_shell = false` in the actual profile. |
-| Worker never starts | Run `sw-agent doctor`; inspect `sw-agent logs NAME` and its tmux controller. Check Bubblewrap, tmux, selected Codex/br, venv and tracker. |
+| Worker never starts | Run `sw-agent doctor`; inspect `sw-agent logs NAME`, `agents/NAME/logs/controller.log`, and errors in its owning terminal. Check Bubblewrap, selected Codex/br, venv and tracker. |
 | GPU device missing | Use `--no-gpu` for one-off commands or set `sandbox.gpu false` before starting workers. |
 | Assigned task does not wake | Check worker running/mode, exact assignee, readiness/dependencies, status, exclusion labels, active bead and maintenance flag. After reconciling, `sw-agent auto NAME` retries pickup. |
-| I visited, detached, and work stopped arriving | `visit` left human mode in place. Run `sw-agent auto NAME`. |
+| I left a visit and work stopped arriving | `visit` left human mode in place. Choose `sw-agent auto NAME` if you want automatic pickup again. |
 | Worker says `needs-human` after restart | Inspect the in-progress bead and dirty files; give recovery instructions. Do not clear/reassign another worker's work blindly. |
-| I quit the native UI | Stop/start that worker to reopen it. Detach instead when leaving it working. |
-| Start reports an old tmux session | Inspect the exact session/controller first. Remove only that confirmed stale session before retrying; avoid `tmux kill-server`, which affects unrelated work. |
+| I quit the owning native UI | That launch stopped. Run `sw-agent start NAME` in the terminal you choose to resume its history. |
+| Start says the worker is already running | Return to its original terminal or use `visit NAME` in this one. To move its owning terminal, stop that worker deliberately, then start here. |
 | Templates conflict on upgrade | Read the proposed diff, preserve your local edits, reconcile manually, retry. |
 | Sandbox GitHub command denied | Perform the needed write yourself in the authorized host workflow; do not ask the agent to find another route. |
 | Review lost approval after a new commit | Read the old reviewed SHA explicitly. New code needs its own review; feedback is commit-scoped. |
+
+### Moving off the old tmux setup
+
+Existing processes keep the old behavior until stopped. In an external shell,
+inspect `sw-agent status`, pause workers you want to park, then request
+`sw-agent stop NAME --after-task` when appropriate. Check unfinished beads and
+dirty files before restarting; stopping does not undo their changes. Reinstall
+this checkout into the workspace venv, then launch individual workers in terminals
+you choose. New code does not attach to or clean up old tmux sessions. Avoid
+broad tmux kill commands that could affect unrelated work.
+
+Custom workspace instructions may still contain the old startup loop/default-auto
+advice. Reconcile it when `sw-init --upgrade --dry-run` reports local-edit conflicts.
 
 After a machine restart, start the project workers and IT agent again explicitly.
 Use `status`, `motd`, and the current beads to regain context before resuming.

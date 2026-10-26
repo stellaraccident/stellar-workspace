@@ -3,8 +3,9 @@ name: team-operation
 description: Coordinate this workspace's named interactive Codex workers through assigned beads and MOTD.
 ---
 
-Read `sw-agent-readme team`. The operator starts workers once in the external
-shell and visits the lead for human planning. Make bounded
+Read `sw-agent-readme team`. The human starts foreground workers in terminals
+they choose and talks to the lead there. SW never manages windows/panes/tmux.
+Default mode is human; --auto or auto NAME requires explicit human opt-in. Make bounded
 beads with source/base, acceptance and checks; assign them to stable names. Auto
 workers receive a queue hint and claim conditionally. Use status for mode/task,
 visit for the same native transcript/conversation, and auto to return scheduling.

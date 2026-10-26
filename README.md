@@ -308,20 +308,24 @@ sw-agent install-br --dry-run
 sw-agent install-br
 sw-agent init-beads
 sw-agent doctor
-sw-agent start lead
-sw-agent visit lead
+sw-agent start lead          # foreground in this terminal; human mode
 ```
 
-Requires Linux, Bubblewrap, tmux and a qualified Codex CLI (tested with 0.162.1).
+Requires Linux, Bubblewrap and a qualified Codex CLI (tested with 0.162.1).
 The primordial `sw-init.py --team` also works before installing Python packages.
 Initializer never starts agents or creates a tracker. Existing trackers are
 preserved; migrations are explicit operator work.
 
-Talk normally to the lead. Start the named workers once from the operator shell; the lead creates and
-assigns beads through `sw-agent`, and running workers wake on ready assignments. Visit a
-worker's actual Codex UI with `sw-agent visit ada`; this suspends automatic task
-pickup until `sw-agent auto ada`. `sw-agent watch ada` observes without takeover.
-Detaching tmux keeps the conversation running.
+Talk normally to the lead. In another terminal of your choosing, run
+`sw-agent start ada` for human-led work, or explicitly choose
+`sw-agent start ada --auto` for assigned-bead pickup. Each start stays in the
+foreground; exiting its native UI stops that launch and preserves conversation
+history. Every new launch defaults to human mode.
+
+`sw-agent visit ada` opens an additional native connection in the terminal where
+you run it and suspends automatic pickup until `sw-agent auto ada`. Leaving a
+visit leaves the owning start running. SW never manages terminal windows, panes
+or tmux sessions. Use `status`/`logs` to inspect a worker without opening a UI.
 
 [docs/multi-agent.md](docs/multi-agent.md) is the living design and complete
 operator reference, including machine-wide IT, MOTD broadcasts, cooperative

@@ -7,6 +7,7 @@ from pathlib import Path
 import socket
 import time
 
+from .. import __version__
 from ..workspace import WorkspaceError
 
 
@@ -21,7 +22,7 @@ class Codex:
             transport.connect(str(path))
             self.ws = websocket.create_connection('ws://localhost/', socket=transport,
                                                   timeout=timeout, suppress_origin=True)
-            self.call('initialize', {'clientInfo': {'name': 'stellar_workspace', 'version': '0.2.0'},
+            self.call('initialize', {'clientInfo': {'name': 'stellar_workspace', 'version': __version__},
                                      'capabilities': {}})
             self.ws.send(json.dumps({'method': 'initialized', 'params': {}}))
         except Exception:

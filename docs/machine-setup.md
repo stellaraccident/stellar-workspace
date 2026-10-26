@@ -1,5 +1,9 @@
 # Machine setup
 
+Stellar Workspace runs agents in foreground terminals chosen by the human. It
+does not manage tmux. The optional tmux references below apply only if you choose
+to use it yourself; the clipboard and newline settings also work over plain SSH.
+
 ## Codex on the remote SSH host
 
 ### Preserve the sandbox PATH
