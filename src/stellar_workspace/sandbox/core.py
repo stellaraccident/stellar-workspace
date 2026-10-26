@@ -139,6 +139,9 @@ def build_plan(root: Path, config: dict, overrides: dict | None = None, *, agent
             if not Path(device).exists():
                 raise WorkspaceError(f"Requested AMD GPU device missing: {device}")
             plan.mounts.append(("--dev-bind", device, device))
+        # AMD NPUs use accelerator nodes, which may be absent on GPU-only hosts.
+        if Path("/dev/accel").exists():
+            plan.mounts.append(("--dev-bind", "/dev/accel", "/dev/accel"))
         plan.mounts.append(("--ro-bind", "/sys", "/sys"))
     plan.env = {"HOME": str(home), "USER": os.environ.get("USER", str(os.getuid())),
                 "TERM": os.environ.get("TERM", "xterm-256color"), "LANG": os.environ.get("LANG", "C.UTF-8"),
