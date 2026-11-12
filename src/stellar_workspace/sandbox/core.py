@@ -51,7 +51,11 @@ def build_plan(root: Path, config: dict, overrides: dict | None = None, *, agent
     home = Path.home().resolve()
     cwd = Path.cwd().resolve()
     plan = Plan(root, cwd if cwd.is_relative_to(root) else root)
-    plan.capabilities = {k: options[k] for k in ("network", "gpu", "gh_proxy", "agent_profiles")}
+    plan.capabilities = {k: options[k] for k in ("network", "gpu", "gh_proxy", "agent_profiles", "cap_add")}
+    plan.capabilities["fuse"] = bool(options.get("fuse", False))
+    for capability in options["cap_add"]:
+        if not capability or capability.startswith("-") or not capability.isascii() or not all(c.isalnum() or c == "_" for c in capability):
+            raise WorkspaceError(f"Invalid capability name: {capability}")
     for path in ("/usr", "/lib", "/lib64", "/bin", "/sbin", "/etc"):
         if Path(path).exists():
             plan.mounts.append(("--ro-bind", path, path))
@@ -111,13 +115,17 @@ def build_plan(root: Path, config: dict, overrides: dict | None = None, *, agent
             plan.mounts.append(("--ro-bind", str(path), str(path)))
     protected_credentials = credential_paths(root)
     used = set()
-    for key, flag in (("ro", "--ro-bind"), ("rw", "--bind")):
+    for key, flag in (("ro", "--ro-bind"), ("rw", "--bind"), ("dev", "--dev-bind")):
         for raw in options[key]:
             path = Path(raw).expanduser()
             path = (root / path).resolve() if not path.is_absolute() else path.resolve()
             if not path.exists():
                 raise WorkspaceError(f"Mount does not exist: {path}")
             protected = [*protected_credentials, root, root / ".tmp", root / ".venv", home, Path("/usr"), Path("/etc"), Path("/proc"), Path("/dev"), Path("/sys"), Path("/run")]
+            # Explicit device mounts may overlay children of the synthetic /dev.
+            # Keep /dev itself and all other protected paths off-limits.
+            if key == "dev" and path != Path("/dev") and path.is_relative_to(Path("/dev")):
+                protected.remove(Path("/dev"))
             if path == Path("/tmp") or any(path == p or path in p.parents or p in path.parents for p in used) or any(path == p or path in p.parents or p in path.parents for p in protected if p != home) or path == home or path in home.parents:
                 raise WorkspaceError(f"Conflicting or protected extra mount: {path}")
             if path.is_relative_to(home) and path.parts[len(home.parts)] in {".ssh", ".aws", ".gnupg"}:
@@ -166,6 +174,8 @@ def argv_for(plan: Plan, handles: list) -> list[str]:
     args = ["--die-with-parent", "--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts"]
     if not plan.capabilities["network"]:
         args.append("--unshare-net")
+    for capability in plan.capabilities.get("cap_add", []):
+        args += ["--cap-add", capability]
     for flag, src, dst in plan.mounts:
         args += [flag, src] + ([dst] if dst else [])
     for path in plan.hidden_files:
@@ -186,6 +196,18 @@ def stop(process):
         except subprocess.TimeoutExpired:
             process.kill()
             process.wait()
+
+
+def payload_command(plan: Plan, command: list[str]) -> list[str]:
+    if not plan.capabilities.get("fuse", False):
+        return command
+    unshare = shutil.which("unshare", path=SYSTEM_PATH)
+    if not unshare:
+        raise WorkspaceError("FUSE mode requires unshare (util-linux)")
+    # Bubblewrap may enter a second user namespace after creating its mount
+    # namespace. Create a mount namespace owned by the final user namespace,
+    # where the retained CAP_SYS_ADMIN can actually authorize FUSE mounts.
+    return [unshare, "--mount", "--", *command]
 
 
 def execute(plan: Plan, command: list[str]) -> int:
@@ -223,6 +245,7 @@ def execute(plan: Plan, command: list[str]) -> int:
                 rc.write_text(files("stellar_workspace").joinpath("resources", "sandbox-bashrc.sh").read_text())
                 command = ["/bin/bash", "--rcfile", str(rc)]
             args = argv_for(plan, handles)
+            command = payload_command(plan, command)
             child = subprocess.Popen([bwrap, *args, "--", *command], pass_fds=[h.fileno() for h in handles], start_new_session=True,
                                      env={"PATH": SYSTEM_PATH, "LANG": plan.env["LANG"], "HOME": plan.env["HOME"]})
             def forward(signum, frame):

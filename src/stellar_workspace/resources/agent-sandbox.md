@@ -27,6 +27,17 @@ shell snapshots. Use --agent-profile codex for isolated workspace-local state.
   External symlink targets need explicit mounts. Protected overlays, credential
   directories and mounts overlapping host GitHub/PyPI/Git credential paths are denied.
   Mount specific external CLI/runtime paths, not broad home/config directories.
+- `--dev PATH` adds a Bubblewrap `--dev-bind` mount (repeatable). Explicit
+  children of `/dev`, such as `/dev/fuse`, are allowed; mounting all of `/dev`
+  is denied. Other protected-path and mount-conflict checks still apply.
+- `--cap-add CAP` retains a capability in the sandbox user namespace (repeatable).
+  FUSE mounting can require `--dev /dev/fuse --cap-add CAP_SYS_ADMIN`.
+  This grants mount administration inside the sandbox namespace; host restrictions
+  still apply. No extra capabilities are retained by default.
+- `--fuse` implies `--dev /dev/fuse --cap-add CAP_SYS_ADMIN` without adding
+  duplicate implied entries. The host must provide `/dev/fuse` and permit mounts.
+  Commands run through util-linux `unshare --mount` so the mount namespace is
+  owned by the final sandbox user namespace. This requires `unshare` on the host.
 - `--agent-profile codex` replaces the default host state mount and seeds only
   ~/.codex/auth.json into workspace cache/agent-state/codex, then
   persists local config/sessions there. Seeds are mode 0600, copied only if

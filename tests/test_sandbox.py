@@ -13,6 +13,76 @@ from stellar_workspace.sandbox.proxy import allowed, Proxy
 from stellar_workspace.workspace import WorkspaceError, load
 
 
+def test_device_and_capability_options(workspace, capsys):
+    from stellar_workspace.sandbox.cli import main
+    from stellar_workspace.init import initialize
+    initialize(workspace, changes=[['sandbox.dev', '["/dev/null"]'],
+                                   ['sandbox.cap_add', '["CAP_CHOWN"]']])
+    assert main(['--workspace', str(workspace), '--dev', '/dev/zero',
+                 '--cap-add', 'CAP_SYS_ADMIN', '--dry-run']) == 0
+    result = json.loads(capsys.readouterr().out)
+    for device in ('/dev/null', '/dev/zero'):
+        assert ['--dev-bind', device, device] in result['mounts']
+    assert result['capabilities']['cap_add'] == ['CAP_CHOWN', 'CAP_SYS_ADMIN']
+    assert result['capabilities']['fuse'] is False
+    plan = build_plan(workspace, load(workspace))
+    handles = []
+    try:
+        argv = argv_for(plan, handles)
+        assert argv[argv.index('--cap-add') + 1] == 'CAP_CHOWN'
+    finally:
+        for handle in handles:
+            handle.close()
+
+
+@pytest.mark.parametrize('capability', ['', '--help', 'CAP SYS_ADMIN', 'CAP_é', 'CAP_SYS_ADMIN;id'])
+def test_invalid_capability_names(workspace, capability):
+    with pytest.raises(WorkspaceError, match='Invalid capability'):
+        build_plan(workspace, load(workspace), {'cap_add': [capability]})
+
+
+def test_device_mount_protection(workspace, tmp_path):
+    config = load(workspace)
+    for mount in ('/dev', '/etc', str(workspace), str(Path.home() / '.aws')):
+        path = Path(mount)
+        if path.exists():
+            with pytest.raises(WorkspaceError, match='protected|Credential'):
+                build_plan(workspace, config, {'dev': [mount]})
+    with pytest.raises(WorkspaceError, match='protected'):
+        build_plan(workspace, config, {'dev': ['/dev/null', '/dev/null']})
+    with pytest.raises(WorkspaceError, match='protected'):
+        build_plan(workspace, config, {'rw': ['/dev/null']})
+    with pytest.raises(WorkspaceError, match='does not exist'):
+        build_plan(workspace, config, {'dev': [str(tmp_path / 'missing')]})
+
+
+@pytest.mark.parametrize('explicit', [False, True])
+def test_fuse_cli_implies_options_once(workspace, monkeypatch, capsys, explicit):
+    from stellar_workspace.sandbox.cli import main
+    from stellar_workspace.sandbox import core
+    exists = Path.exists
+    monkeypatch.setattr(Path, 'exists', lambda path: path == Path('/dev/fuse') or exists(path))
+    monkeypatch.setattr(core.shutil, 'which', lambda *args, **kwargs: '/usr/bin/unshare')
+    options = ['--dev', '/dev/fuse', '--cap-add', 'CAP_SYS_ADMIN'] if explicit else []
+    assert main(['--workspace', str(workspace), '--fuse', *options,
+                 '--dry-run', '--', 'printf', 'a b', '$HOME']) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result['mounts'].count(['--dev-bind', '/dev/fuse', '/dev/fuse']) == 1
+    assert result['capabilities']['cap_add'] == ['CAP_SYS_ADMIN']
+    assert result['capabilities']['fuse'] is True
+    assert result['command'] == ['/usr/bin/unshare', '--mount', '--', 'printf', 'a b', '$HOME']
+
+
+def test_fuse_requires_unshare(workspace, monkeypatch):
+    from stellar_workspace.sandbox import core
+    plan = build_plan(workspace, load(workspace))
+    monkeypatch.setattr(core.shutil, 'which', lambda *args, **kwargs: None)
+    assert core.payload_command(plan, ['true']) == ['true']
+    plan.capabilities['fuse'] = True
+    with pytest.raises(WorkspaceError, match='requires unshare'):
+        core.payload_command(plan, ['true'])
+
+
 def test_plan_and_argv(workspace, monkeypatch):
     monkeypatch.setenv('VIRTUAL_ENV', '/other/venv')
     monkeypatch.setenv('SECRET_TOKEN', 'do-not-copy')
@@ -192,16 +262,57 @@ def test_proxy_host_enforcement(workspace, tmp_path):
     assert not path.exists()
 
 
-def test_execution_forwards_argv_status_cleanup(workspace, tmp_path, monkeypatch, capfd):
+@pytest.mark.parametrize('fuse', [False, True])
+def test_execution_forwards_argv_status_cleanup(workspace, tmp_path, monkeypatch, capfd, fuse):
     # Replace Bubblewrap, not the command construction, to observe forwarding.
     binary = tmp_path / 'bwrap'
     binary.write_text('#!/usr/bin/python3\nimport json,sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(17)\n')
     binary.chmod(0o700)
     monkeypatch.setenv('PATH', f'{tmp_path}:{os.environ["PATH"]}')
     plan = build_plan(workspace, load(workspace))
+    plan.capabilities['fuse'] = fuse
     assert execute(plan, ['printf', 'literal $HOME', 'a b', '--flag']) == 17
     observed=json.loads(capfd.readouterr().out)
-    assert observed[observed.index('--')+1:] == ['printf','literal $HOME','a b','--flag']
+    payload = observed[observed.index('--')+1:]
+    if fuse:
+        assert Path(payload[0]).name == 'unshare'
+        assert payload[1:3] == ['--mount', '--']
+        payload = payload[3:]
+    assert payload == ['printf','literal $HOME','a b','--flag']
+    assert not list((workspace / '.tmp').glob('sw-sandbox-*'))
+
+
+@pytest.mark.integration
+def test_real_fuse_mount(workspace):
+    import shutil
+    from stellar_workspace.sandbox.cli import main
+    if not Path('/dev/fuse').exists() or not shutil.which('bwrap') or not shutil.which('unshare'):
+        pytest.skip('FUSE integration requires /dev/fuse, Bubblewrap and unshare')
+    probe = subprocess.run(['bwrap', '--ro-bind', '/', '/', '--unshare-user', '--', 'true'], capture_output=True)
+    if probe.returncode:
+        pytest.skip('Host namespace policy prevents Bubblewrap: ' + probe.stderr.decode().strip())
+    # A raw FUSE mount verifies namespace ownership and device access without
+    # requiring a third-party filesystem daemon. Never access the mounted tree.
+    script = '''
+import ctypes, os, pathlib
+target = pathlib.Path('/tmp/fuse-probe')
+target.mkdir()
+libc = ctypes.CDLL(None, use_errno=True)
+fd = os.open('/dev/fuse', os.O_RDWR)
+try:
+    options = f'fd={fd},rootmode=40000,user_id={os.getuid()},group_id={os.getgid()}'.encode()
+    result = libc.mount(b'fuse', os.fsencode(target), b'fuse', 6, options)
+    assert result == 0, os.strerror(ctypes.get_errno())
+    try:
+        assert ' - fuse ' in pathlib.Path('/proc/self/mountinfo').read_text()
+    finally:
+        assert libc.umount2(os.fsencode(target), 2) == 0, os.strerror(ctypes.get_errno())
+finally:
+    os.close(fd)
+    target.rmdir()
+'''
+    assert main(['--workspace', str(workspace), '--fuse', '--', 'python', '-c', script]) == 0
+    assert not (workspace / '.tmp/fuse-probe').exists()
     assert not list((workspace / '.tmp').glob('sw-sandbox-*'))
 
 

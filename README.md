@@ -118,6 +118,7 @@ sw-sandbox --dry-run
 sw-sandbox -- bash
 sw-sandbox --no-network -- python -m pytest
 sw-sandbox --gpu --ro /opt/rocm -- COMMAND
+sw-sandbox --fuse -- COMMAND
 sw-sandbox --agent-profile codex -- codex
 sw-sandbox --gh-proxy -- gh pr list -R owner/repo
 ```
@@ -158,7 +159,14 @@ still disable access; use `sw-init --set sandbox.gpu true` to enable it in an
 older workspace and remove unwanted per-agent overrides.
 `--ro`/`--rw` append mounts at their real paths;
 relative paths use the workspace root. External workspace symlink targets are
-not mounted automatically. Protected overlays and SSH/GPG/AWS credential mounts
+not mounted automatically. `--dev PATH` adds a device mount and `--cap-add CAP`
+retains a capability in the sandbox user namespace; both are repeatable and
+can also be configured as `sandbox.dev` and `sandbox.cap_add` lists.
+`--fuse` implies `--dev /dev/fuse --cap-add CAP_SYS_ADMIN`, without duplicating
+those implied entries, and runs the command in a new mount namespace using
+util-linux `unshare`. The host must provide `/dev/fuse` and permit FUSE mounts.
+Device mounts may expose children of `/dev`, but never all of `/dev`.
+Protected overlays and SSH/GPG/AWS credential mounts
 are rejected. The optional `--agent-profile codex` replaces shared host state
 with workspace-local state and seeds only `~/.codex/auth.json` into
 `cache/agent-state/codex/`, with mode 0600,
@@ -264,6 +272,8 @@ gh_proxy = false
 agent_profiles = []
 ro = []
 rw = []
+dev = []
+cap_add = []
 
 [sandbox.env]
 MY_SETTING = "value"

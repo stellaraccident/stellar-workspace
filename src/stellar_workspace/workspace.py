@@ -13,7 +13,7 @@ class WorkspaceError(ValueError):
 
 SANDBOX_DEFAULTS = {
     "network": True, "gpu": True, "gh_proxy": False,
-    "agent_profiles": [], "ro": [], "rw": [], "env": {},
+    "agent_profiles": [], "ro": [], "rw": [], "dev": [], "cap_add": [], "env": {},
 }
 
 
